@@ -4,8 +4,7 @@ use crate::paths;
 use std::path::Path;
 
 pub fn execute_staging_plan(workspace_root: &Path, plan: &DeployPlan) -> SlimResult<()> {
-    let staging_root =
-        paths::vfs_layer_data_path(workspace_root, &plan.instance_id, &plan.profile_id);
+    let staging_root = paths::vfs_layer_path(workspace_root, &plan.instance_id, &plan.profile_id);
     execute_deploy_plan_at_root(workspace_root, plan, &staging_root)
 }
 

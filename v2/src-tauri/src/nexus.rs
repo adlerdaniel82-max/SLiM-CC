@@ -11,6 +11,7 @@ use std::fs;
 use std::path::Path;
 
 const NEXUS_API_BASE: &str = "https://api.nexusmods.com/v3";
+const NEXUS_LEGACY_API_BASE: &str = "https://api.nexusmods.com/v1";
 
 pub fn list_nexus_mod_links(conn: &Connection, instance_id: &str) -> SlimResult<Vec<NexusModLink>> {
     let mut stmt = conn.prepare(
@@ -412,13 +413,16 @@ pub fn download_nexus_file(
     conn: &Connection,
     request: crate::models::NexusDownloadRequest,
 ) -> SlimResult<crate::models::NexusDownloadResult> {
-    let api_key = crate::settings::load_nexus_api_key(conn)?
-        .ok_or_else(|| SlimError::InvalidPath("Nexus API key is not configured".into()))?;
     let settings = crate::settings::load_settings(conn)?;
     let download_root = settings
         .mod_download_path
         .ok_or_else(|| SlimError::InvalidPath("Mod download folder is not configured".into()))?;
     fs::create_dir_all(&download_root)?;
+    if let Some(uri) = validated_nexus_cdn_url(&request.source_url) {
+        return download_from_nexus_cdn(&download_root, uri, None);
+    }
+    let api_key = crate::settings::load_nexus_api_key(conn)?
+        .ok_or_else(|| SlimError::InvalidPath("Nexus API key is not configured".into()))?;
     let link = parse_nexus_source_link(&request.source_url)
         .ok_or_else(|| SlimError::InvalidPath("Unsupported Nexus download link".into()))?;
     let file_id = link
@@ -429,7 +433,7 @@ pub fn download_nexus_file(
         (Some(key), Some(expires)) => format!("?key={}&expires={}", url_path(&key), expires),
         _ => String::new(),
     };
-    let links = nexus_get(
+    let links = nexus_v1_get(
         &api_key,
         &format!(
             "/games/{}/mods/{}/files/{}/download_link{}",
@@ -442,7 +446,7 @@ pub fn download_nexus_file(
     .body;
     let uri = links.as_array().and_then(|values| values.first()).and_then(|value| value.get("URI").or_else(|| value.get("uri"))).and_then(Value::as_str)
         .ok_or_else(|| SlimError::Process("Nexus returned no download mirror. Non-premium users must use an nxm link from Download with Manager.".into()))?;
-    let metadata = nexus_get(
+    let metadata = nexus_v1_get(
         &api_key,
         &format!(
             "/games/{}/mods/{}/files/{}",
@@ -463,10 +467,18 @@ pub fn download_nexus_file(
         .filter(|name| !name.is_empty())
         .unwrap_or("nexus-download.zip")
         .to_string();
-    let destination = download_root.join(&file_name);
-    let partial = download_root.join(format!(".{file_name}.part"));
+    download_from_nexus_cdn(&download_root, uri.to_string(), Some((file_name, link)))
+}
+
+fn download_from_nexus_cdn(
+    download_root: &Path,
+    uri: String,
+    metadata: Option<(String, NexusSourceLink)>,
+) -> SlimResult<crate::models::NexusDownloadResult> {
+    let requested_url = validated_nexus_cdn_url(&uri)
+        .ok_or_else(|| SlimError::Safety("refusing download outside the Nexus CDN".into()))?;
     let mut response = reqwest::blocking::Client::new()
-        .get(uri)
+        .get(requested_url)
         .header(
             "User-Agent",
             format!("SLiM-CC/{}", env!("CARGO_PKG_VERSION")),
@@ -478,6 +490,31 @@ pub fn download_nexus_file(
             response.status()
         )));
     }
+    if validated_nexus_cdn_url(response.url().as_str()).is_none() {
+        return Err(SlimError::Safety(
+            "Nexus CDN redirected to an untrusted host".into(),
+        ));
+    }
+    let header_name = response
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(content_disposition_file_name);
+    let file_name = metadata
+        .as_ref()
+        .map(|(name, _)| name.clone())
+        .or(header_name)
+        .or_else(|| {
+            response
+                .url()
+                .path_segments()?
+                .next_back()
+                .map(str::to_string)
+        })
+        .and_then(|name| safe_download_file_name(&name))
+        .unwrap_or_else(|| "nexus-download.bin".into());
+    let destination = download_root.join(&file_name);
+    let partial = download_root.join(format!(".{file_name}.part"));
     let mut output = fs::File::create(&partial)?;
     let bytes_written = response.copy_to(&mut output)?;
     output.sync_all()?;
@@ -486,10 +523,34 @@ pub fn download_nexus_file(
         path: destination,
         file_name,
         bytes_written,
-        game_domain: link.game_domain,
-        nexus_mod_id: link.nexus_mod_id,
-        nexus_file_id: file_id,
+        game_domain: metadata.as_ref().map(|(_, link)| link.game_domain.clone()),
+        nexus_mod_id: metadata.as_ref().map(|(_, link)| link.nexus_mod_id),
+        nexus_file_id: metadata.as_ref().and_then(|(_, link)| link.nexus_file_id),
     })
+}
+
+fn validated_nexus_cdn_url(raw: &str) -> Option<String> {
+    let url = reqwest::Url::parse(raw.trim()).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    (url.scheme() == "https" && (host == "nexus-cdn.com" || host.ends_with(".nexus-cdn.com")))
+        .then(|| url.to_string())
+}
+
+fn content_disposition_file_name(value: &str) -> Option<String> {
+    value.split(';').find_map(|part| {
+        let (name, value) = part.trim().split_once('=')?;
+        name.eq_ignore_ascii_case("filename")
+            .then(|| value.trim().trim_matches(['"', '\'']).to_string())
+    })
+}
+
+fn safe_download_file_name(raw: &str) -> Option<String> {
+    Path::new(raw)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "." && *value != "..")
+        .map(str::to_string)
 }
 
 fn parse_collection_reference(url: &str) -> SlimResult<(String, Option<i64>)> {
@@ -1018,7 +1079,15 @@ struct NexusResponse {
 }
 
 fn nexus_get(api_key: &str, path: &str) -> SlimResult<NexusResponse> {
-    let url = format!("{NEXUS_API_BASE}{path}");
+    nexus_get_from(NEXUS_API_BASE, api_key, path)
+}
+
+fn nexus_v1_get(api_key: &str, path: &str) -> SlimResult<NexusResponse> {
+    nexus_get_from(NEXUS_LEGACY_API_BASE, api_key, path)
+}
+
+fn nexus_get_from(base: &str, api_key: &str, path: &str) -> SlimResult<NexusResponse> {
+    let url = format!("{base}{path}");
     let response = reqwest::blocking::Client::new()
         .get(&url)
         .header("apikey", api_key)
@@ -1177,6 +1246,68 @@ mod tests {
         );
 
         assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn direct_cdn_validation_accepts_only_official_https_hosts() {
+        assert!(validated_nexus_cdn_url(
+            "https://supporter-files.nexus-cdn.com/path/mod.zip?token=secret"
+        )
+        .is_some());
+        assert!(validated_nexus_cdn_url("http://supporter-files.nexus-cdn.com/mod.zip").is_none());
+        assert!(
+            validated_nexus_cdn_url("https://nexus-cdn.com.attacker.example/mod.zip").is_none()
+        );
+        assert!(validated_nexus_cdn_url("https://example.com/mod.zip").is_none());
+    }
+
+    #[test]
+    fn content_disposition_names_are_reduced_to_safe_file_names() {
+        let name = content_disposition_file_name("attachment; filename=\"Example Mod-1-2-3.zip\"")
+            .and_then(|value| safe_download_file_name(&value));
+        assert_eq!(name.as_deref(), Some("Example Mod-1-2-3.zip"));
+        assert_eq!(
+            safe_download_file_name("../../outside.zip").as_deref(),
+            Some("outside.zip")
+        );
+        assert!(safe_download_file_name("..").is_none());
+    }
+
+    #[test]
+    #[ignore = "requires SLIMCC_LIVE_NEXUS_URL and optionally SLIMCC_LIVE_NEXUS_API_KEY"]
+    fn live_nexus_download_uses_the_production_backend() {
+        let source_url = std::env::var("SLIMCC_LIVE_NEXUS_URL").expect("live Nexus URL");
+        let api_key = std::env::var("SLIMCC_LIVE_NEXUS_API_KEY").ok();
+        let download_root = std::env::temp_dir().join(format!(
+            "slimcc-live-nexus-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&download_root).expect("create isolated download folder");
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )
+        .expect("create settings schema");
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('mod_download_path', ?1)",
+            [download_root.to_string_lossy().as_ref()],
+        )
+        .expect("configure download path");
+        if let Some(api_key) = api_key {
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES ('nexus_api_key', ?1)",
+                [api_key],
+            )
+            .expect("configure Nexus API key");
+        }
+
+        let result = download_nexus_file(&conn, crate::models::NexusDownloadRequest { source_url })
+            .expect("download through production backend");
+        assert!(result.bytes_written > 0);
+        assert!(result.path.is_file());
+        assert!(!result.file_name.contains('/'));
+        let _ = std::fs::remove_dir_all(download_root);
     }
 
     #[test]

@@ -180,9 +180,9 @@ pub struct NexusDownloadResult {
     pub path: PathBuf,
     pub file_name: String,
     pub bytes_written: u64,
-    pub game_domain: String,
-    pub nexus_mod_id: i64,
-    pub nexus_file_id: i64,
+    pub game_domain: Option<String>,
+    pub nexus_mod_id: Option<i64>,
+    pub nexus_file_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

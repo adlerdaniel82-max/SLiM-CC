@@ -42,9 +42,11 @@ pub fn vfs_root(root: &Path, instance_id: &str, profile_id: &str) -> PathBuf {
 }
 
 pub fn vfs_layer_data_path(root: &Path, instance_id: &str, profile_id: &str) -> PathBuf {
-    vfs_root(root, instance_id, profile_id)
-        .join("layer")
-        .join("Data")
+    vfs_layer_path(root, instance_id, profile_id).join("Data")
+}
+
+pub fn vfs_layer_path(root: &Path, instance_id: &str, profile_id: &str) -> PathBuf {
+    vfs_root(root, instance_id, profile_id).join("layer")
 }
 
 pub fn vfs_mount_path(root: &Path, instance_id: &str, profile_id: &str) -> PathBuf {

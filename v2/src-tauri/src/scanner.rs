@@ -3,6 +3,8 @@ use crate::models::ModFile;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+pub const GAME_ROOT_PREFIX: &str = "__slimcc_game_root__/";
+
 pub fn normalize_rel_path(path: &str) -> String {
     path.replace('\\', "/").to_lowercase()
 }
@@ -122,7 +124,15 @@ fn has_child_dir_case_insensitive(root: &Path, name: &str) -> SlimResult<bool> {
 }
 
 pub fn scan_mod_files(mod_id: &str, mod_root: &Path) -> SlimResult<Vec<ModFile>> {
-    let data_root = detect_data_root(mod_root)?;
+    let data_root = match detect_data_root(mod_root) {
+        Ok(root) => root,
+        Err(error) => {
+            if let Some(game_root) = find_vortex_game_root(mod_root)? {
+                return scan_game_root_files(mod_id, &game_root);
+            }
+            return Err(error);
+        }
+    };
     let mut files = Vec::new();
 
     for entry in WalkDir::new(&data_root).follow_links(false) {
@@ -148,7 +158,87 @@ pub fn scan_mod_files(mod_id: &str, mod_root: &Path) -> SlimResult<Vec<ModFile>>
         });
     }
 
+    if data_root
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("Data"))
+    {
+        if let Some(game_root) = data_root.parent() {
+            for entry in std::fs::read_dir(game_root)? {
+                let entry = entry?;
+                if !entry.file_type()?.is_file() || !is_game_root_binary(&entry.path()) {
+                    continue;
+                }
+                push_game_root_file(mod_id, game_root, entry.path(), &mut files)?;
+            }
+        }
+    }
+
     Ok(files)
+}
+
+fn find_vortex_game_root(mod_root: &Path) -> SlimResult<Option<PathBuf>> {
+    for entry in WalkDir::new(mod_root).follow_links(false).max_depth(4) {
+        let entry = entry.map_err(|error| SlimError::InvalidPath(error.to_string()))?;
+        if entry.file_type().is_file()
+            && entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("vortex_override_instructions.json")
+        {
+            return Ok(entry.path().parent().map(Path::to_path_buf));
+        }
+    }
+    Ok(None)
+}
+
+fn scan_game_root_files(mod_id: &str, game_root: &Path) -> SlimResult<Vec<ModFile>> {
+    let mut files = Vec::new();
+    for entry in WalkDir::new(game_root).follow_links(false) {
+        let entry = entry.map_err(|error| SlimError::InvalidPath(error.to_string()))?;
+        if !entry.file_type().is_file()
+            || entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("vortex_override_instructions.json")
+        {
+            continue;
+        }
+        push_game_root_file(mod_id, game_root, entry.path().to_path_buf(), &mut files)?;
+    }
+    Ok(files)
+}
+
+fn push_game_root_file(
+    mod_id: &str,
+    game_root: &Path,
+    path: PathBuf,
+    files: &mut Vec<ModFile>,
+) -> SlimResult<()> {
+    let rel = path
+        .strip_prefix(game_root)
+        .map_err(|_| SlimError::InvalidPath("failed to strip game root".into()))?;
+    let original_rel_path = format!(
+        "{GAME_ROOT_PREFIX}{}",
+        rel.to_string_lossy().replace('\\', "/")
+    );
+    let normalized_rel_path = normalize_rel_path(&original_rel_path);
+    let file_size = path.metadata().ok().map(|metadata| metadata.len());
+    files.push(ModFile {
+        mod_id: mod_id.to_string(),
+        original_rel_path,
+        normalized_rel_path,
+        abs_source_path: path,
+        file_size,
+    });
+    Ok(())
+}
+
+fn is_game_root_binary(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("dll") || extension.eq_ignore_ascii_case("exe")
+        })
 }
 
 pub fn is_plugin_path(rel_path: &str) -> bool {
@@ -230,6 +320,44 @@ mod tests {
         let detected = detect_data_root(&root).expect("detect deeply nested data folder");
 
         assert_eq!(detected, nested);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scanner_marks_vortex_root_installer_files_for_the_game_layer() {
+        let root = temp_root("vortex-game-root");
+        std::fs::write(root.join("vortex_override_instructions.json"), b"[]")
+            .expect("write Vortex instructions");
+        std::fs::write(root.join("d3dx9_42.dll"), b"preloader").expect("write root DLL");
+
+        let files = scan_mod_files("root-mod", &root).expect("scan game-root installer");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].original_rel_path,
+            "__slimcc_game_root__/d3dx9_42.dll"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scanner_keeps_skse_data_and_root_binaries_in_separate_scopes() {
+        let root = temp_root("skse-mixed-root");
+        let wrapper = root.join("skse64_2_02_06");
+        std::fs::create_dir_all(wrapper.join("Data/Scripts")).expect("create Data tree");
+        std::fs::write(wrapper.join("Data/Scripts/example.pex"), b"script").expect("write script");
+        std::fs::write(wrapper.join("skse64_loader.exe"), b"loader").expect("write loader");
+        std::fs::write(wrapper.join("skse64_runtime.dll"), b"runtime").expect("write runtime");
+
+        let files = scan_mod_files("skse", &root).expect("scan mixed SKSE archive");
+        let paths = files
+            .iter()
+            .map(|file| file.original_rel_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(paths.contains(&"Scripts/example.pex"), "paths: {paths:?}");
+        assert!(paths.contains(&"__slimcc_game_root__/skse64_loader.exe"));
+        assert!(paths.contains(&"__slimcc_game_root__/skse64_runtime.dll"));
         let _ = std::fs::remove_dir_all(root);
     }
 

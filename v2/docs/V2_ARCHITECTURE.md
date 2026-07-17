@@ -26,6 +26,11 @@ profile/vfs/game        virtual game root used for launching
 
 The layer is rebuilt from the deterministic deployment plan. The game and external tools must use the virtual game root so they observe the same profile. `fuse-overlayfs` and `fusermount3` are required.
 
+Data mods are placed below `layer/Data`. Recognized game-root installers such as the
+Engine Fixes preloader, plus SKSE DLL/EXE components, are placed directly below the virtual
+`layer` game root. Both scopes are mounted together and neither writes to the real game
+installation.
+
 ## Tests
 
 ```bash
@@ -33,6 +38,9 @@ The layer is rebuilt from the deterministic deployment plan. The game and extern
 ./scripts/test-integration.sh
 ./scripts/test-e2e.sh
 ./scripts/test-all.sh
+./scripts/test-live-fixtures.sh  # requires explicitly supplied live fixture variables
 ```
 
 The integration script includes a real rootless FUSE mount and verifies that writes enter the profile overwrite rather than the base game directory.
+Live tests use the production download, extraction, import, and VFS planning code. Temporary
+Nexus credentials are read from the local database and are never printed or committed.

@@ -85,7 +85,17 @@ pub fn build_plan(
             continue;
         }
 
-        let target_path = target_root.join(&winner.original_rel_path);
+        let target_path = if target != DeployTarget::RealData {
+            winner
+                .original_rel_path
+                .strip_prefix(crate::scanner::GAME_ROOT_PREFIX)
+                .map(|relative| {
+                    paths::vfs_layer_path(workspace_root, instance_id, profile_id).join(relative)
+                })
+                .unwrap_or_else(|| target_root.join(&winner.original_rel_path))
+        } else {
+            target_root.join(&winner.original_rel_path)
+        };
 
         operations.push(DeployOperation {
             action: action.clone(),

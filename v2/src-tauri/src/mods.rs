@@ -3229,6 +3229,162 @@ mod tests {
         plugin.extend_from_slice(&subrecords);
         plugin
     }
+
+    #[test]
+    #[ignore = "requires SLIMCC_LIVE_FOMOD_PATH"]
+    fn live_fomod_preview_uses_the_production_extractor_and_parser() {
+        let archive = PathBuf::from(
+            std::env::var("SLIMCC_LIVE_FOMOD_PATH").expect("live FOMOD archive path"),
+        );
+        let workspace = temp_workspace("live-fomod-preview");
+        let preview = preview_fomod_package_with_context(&workspace, &archive, None, None)
+            .expect("preview through production backend");
+        assert!(preview.has_fomod);
+        assert!(!preview.steps.is_empty() || !preview.required_files.is_empty());
+        let groups: usize = preview.steps.iter().map(|step| step.groups.len()).sum();
+        let options: usize = preview
+            .steps
+            .iter()
+            .flat_map(|step| &step.groups)
+            .map(|group| group.options.len())
+            .sum();
+        eprintln!(
+            "FOMOD preview: steps={}, groups={}, options={}, notes={}",
+            preview.steps.len(),
+            groups,
+            options,
+            preview.validation_notes.len()
+        );
+        if std::env::var("SLIMCC_LIVE_FOMOD_IMPORT").as_deref() == Ok("1") {
+            let mut conn = Connection::open_in_memory().expect("open in-memory database");
+            conn.execute_batch(include_str!("../migrations/001_initial.sql"))
+                .expect("create schema");
+            conn.execute_batch(include_str!("../migrations/002_mod_editor_state.sql"))
+                .expect("create editor schema");
+            conn.execute_batch(include_str!("../migrations/004_mod_dependencies.sql"))
+                .expect("create dependency schema");
+            conn.execute(
+                "INSERT INTO instances (id, name, game_type, install_path, data_path, runner_type, created_at, updated_at)
+                 VALUES ('instance-live', 'Skyrim Test', 'skyrimse', '/game', '/game/Data', 'manual', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("insert isolated instance");
+            let report = import_mod_folder(
+                &mut conn,
+                &workspace,
+                ImportModFolderRequest {
+                    instance_id: "instance-live".into(),
+                    profile_id: None,
+                    target_mod_id: None,
+                    preview_source_path: None,
+                    name: "Live FOMOD Test".into(),
+                    source_path: archive.clone(),
+                    copy_into_workspace: true,
+                    fomod_selection: None,
+                },
+            )
+            .expect("import through production backend");
+            assert!(report.files_scanned > 0);
+            assert!(report.mod_record.installed_path.is_dir());
+            eprintln!(
+                "FOMOD import: files={}, plugins={}",
+                report.files_scanned, report.plugins_discovered
+            );
+        }
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    #[ignore = "requires SLIMCC_LIVE_MOD_PATH"]
+    fn live_mod_import_uses_the_production_extractor_and_scanner() {
+        let archive =
+            PathBuf::from(std::env::var("SLIMCC_LIVE_MOD_PATH").expect("live mod archive path"));
+        let workspace = temp_workspace("live-mod-import");
+        let mut conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(include_str!("../migrations/001_initial.sql"))
+            .expect("create schema");
+        conn.execute_batch(include_str!("../migrations/002_mod_editor_state.sql"))
+            .expect("create editor schema");
+        conn.execute_batch(include_str!("../migrations/004_mod_dependencies.sql"))
+            .expect("create dependency schema");
+        conn.execute_batch(include_str!("../migrations/011_profile_plugins.sql"))
+            .expect("create profile plugin schema");
+        conn.execute(
+            "INSERT INTO instances (id, name, game_type, install_path, data_path, runner_type, created_at, updated_at)
+             VALUES ('instance-live', 'Skyrim Test', 'skyrimse', '/game', '/game/Data', 'manual', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert isolated instance");
+        conn.execute(
+            "INSERT INTO profiles (id, instance_id, name, created_at, updated_at)
+             VALUES ('profile-live', 'instance-live', 'Test', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert isolated profile");
+        let report = import_mod_folder(
+            &mut conn,
+            &workspace,
+            ImportModFolderRequest {
+                instance_id: "instance-live".into(),
+                profile_id: Some("profile-live".into()),
+                target_mod_id: None,
+                preview_source_path: None,
+                name: "Live Mod Test".into(),
+                source_path: archive,
+                copy_into_workspace: true,
+                fomod_selection: None,
+            },
+        )
+        .expect("import through production backend");
+        assert!(report.files_scanned > 0);
+        assert!(report.mod_record.installed_path.is_dir());
+        eprintln!(
+            "Mod import: files={}, plugins={}",
+            report.files_scanned, report.plugins_discovered
+        );
+        let plan = crate::deploy::build_plan(
+            &conn,
+            &workspace,
+            "instance-live",
+            "profile-live",
+            crate::models::DeployTarget::Staging,
+            crate::models::DeployAction::Symlink,
+        )
+        .expect("build VFS plan");
+        crate::staging::execute_staging_plan(&workspace, &plan).expect("stage VFS layer");
+        let game_root_operations = plan
+            .operations
+            .iter()
+            .filter(|operation| {
+                operation
+                    .original_rel_path
+                    .starts_with(crate::scanner::GAME_ROOT_PREFIX)
+            })
+            .count();
+        eprintln!(
+            "VFS plan: operations={}, game_root={game_root_operations}",
+            plan.operations.len()
+        );
+        for operation in plan.operations.iter().filter(|operation| {
+            operation
+                .original_rel_path
+                .starts_with(crate::scanner::GAME_ROOT_PREFIX)
+        }) {
+            assert!(operation.target.starts_with(crate::paths::vfs_layer_path(
+                &workspace,
+                "instance-live",
+                "profile-live"
+            )));
+            assert!(!operation
+                .target
+                .starts_with(crate::paths::vfs_layer_data_path(
+                    &workspace,
+                    "instance-live",
+                    "profile-live"
+                )));
+        }
+        let _ = std::fs::remove_dir_all(workspace);
+    }
 }
 
 pub fn preview_fomod_package_with_context(
