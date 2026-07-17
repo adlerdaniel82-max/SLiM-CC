@@ -1,11 +1,11 @@
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { backend, type Backend } from "./core/api";
 import { closeMenus, installMenuBehavior } from "./core/menu";
-import { pathName } from "./core/dom";
+import { escapeHtml, pathName } from "./core/dom";
 import { Store } from "./core/store";
 import { normalizeSelection, selectionIsValid } from "./features/fomod/selection";
 import type { AppSettings, FomodPackagePreview, FomodSelectionEntry, GameInstance, ImportedModReport, ModConflictSummary, ModDependencySummary, ModDownloadCandidate, ModRecord, Profile, ProfileModEntry, ProfilePluginEntry, View } from "./types";
-import { collectionDialog, collectionResultDialog, fomodDialog, importDialog, infoDialog, instancesDialog, profilesDialog, settingsDialog } from "./ui/dialogs";
+import { collectionDialog, collectionResultDialog, deleteModDialog, fomodDialog, importDialog, infoDialog, instancesDialog, profilesDialog, settingsDialog } from "./ui/dialogs";
 import { renderShell } from "./ui/shell";
 
 export class SlimApp {
@@ -33,13 +33,19 @@ export class SlimApp {
   }
 
   private render(): void {
+    const openDialog = this.root.querySelector<HTMLElement>("#modal-host")?.firstElementChild;
+    const openContextMenu = this.root.querySelector<HTMLElement>("#context-menu-host")?.firstElementChild;
+    openDialog?.remove(); openContextMenu?.remove();
     this.root.innerHTML = renderShell(this.store.state);
+    if (openDialog) this.root.querySelector("#modal-host")?.append(openDialog);
+    if (openContextMenu) this.root.querySelector("#context-menu-host")?.append(openContextMenu);
     const activity = this.root.querySelector<HTMLElement>("[data-role=activity]");
     if (activity) activity.hidden = !this.logVisible;
   }
 
   private bind(): void {
     this.root.addEventListener("click", (event) => void this.onClick(event));
+    this.root.addEventListener("contextmenu", (event) => this.onContextMenu(event));
     this.root.addEventListener("change", (event) => void this.onChange(event));
     this.root.addEventListener("input", (event) => this.onInput(event));
     this.root.addEventListener("submit", (event) => void this.onSubmit(event));
@@ -54,11 +60,11 @@ export class SlimApp {
 
   private async onClick(event: Event): Promise<void> {
     const target = (event.target as Element).closest<HTMLElement>("[data-action],[data-view],[data-mod-id]");
-    if (!target) return;
+    if (!target) { this.closeContextMenu(); return; }
     const view = target.dataset.view as View | undefined;
     if (view) { this.store.patch({ view }); closeMenus(this.root); if (view === "downloads") await this.refreshDownloads(); return; }
     if (target.dataset.modId && !target.dataset.action) { this.store.patch({ activeModId: target.dataset.modId }); return; }
-    const action = target.dataset.action; closeMenus(this.root);
+    const action = target.dataset.action; closeMenus(this.root); this.closeContextMenu();
     try {
       switch (action) {
         case "refresh": await this.refreshAll(); break;
@@ -76,6 +82,8 @@ export class SlimApp {
         case "pick-game-starter": await this.pick("pick_file", "game_starter_path", "Spielstarter auswählen"); break;
         case "close-dialog": this.closeDialog(); break;
         case "cancel-fomod": await this.cancelFomod(); break;
+        case "delete-mod": { const mod = this.store.state.mods.find((item) => item.id === target.dataset.modId); if (mod) this.openDialog(deleteModDialog(mod.id, mod.name)); break; }
+        case "confirm-delete-mod": await this.deleteMod(target.dataset.modId ?? ""); break;
         case "settings": this.openDialog(settingsDialog(this.store.state)); break;
         case "toggle-log": this.logVisible = !this.logVisible; this.render(); break;
         case "deploy": await this.deploy(); break;
@@ -92,6 +100,18 @@ export class SlimApp {
       }
     } catch (error) { this.fail(error); }
   }
+
+  private onContextMenu(event: MouseEvent): void {
+    const row = (event.target as Element).closest<HTMLElement>("[data-mod-id]");
+    if (!row?.dataset.modId) return;
+    event.preventDefault(); closeMenus(this.root);
+    if (this.store.state.activeModId !== row.dataset.modId) this.store.patch({ activeModId: row.dataset.modId });
+    const host = this.root.querySelector<HTMLElement>("#context-menu-host"); if (!host) return;
+    const left = Math.min(event.clientX, window.innerWidth - 210); const top = Math.min(event.clientY, window.innerHeight - 90);
+    host.innerHTML = `<div class="context-menu" role="menu" style="left:${Math.max(4, left)}px;top:${Math.max(4, top)}px"><button role="menuitem" data-action="delete-mod" data-mod-id="${escapeHtml(row.dataset.modId)}">Mod löschen …</button></div>`;
+  }
+
+  private closeContextMenu(): void { const host = this.root.querySelector<HTMLElement>("#context-menu-host"); if (host) host.innerHTML = ""; }
 
   private async onChange(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement | HTMLSelectElement;
@@ -278,6 +298,13 @@ export class SlimApp {
     const profile = await this.api.call<Profile>("create_profile", { request: { instance_id: instanceId, name } });
     this.closeDialog(); this.store.patch({ activeProfileId: profile.id }); await this.loadInstance(instanceId);
     this.store.log("success", `Profil ${profile.name} angelegt.`);
+  }
+
+  private async deleteMod(modId: string): Promise<void> {
+    const mod = this.store.state.mods.find((item) => item.id === modId); if (!mod) return;
+    await this.api.call("delete_mod", { modId }); this.closeDialog();
+    if (this.store.state.activeInstanceId) await this.loadInstance(this.store.state.activeInstanceId);
+    this.store.log("success", `${mod.name} wurde gelöscht. Das Downloadarchiv bleibt erhalten.`);
   }
 
   private async analyzeCollection(form: HTMLFormElement): Promise<void> {

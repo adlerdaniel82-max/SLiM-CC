@@ -17,6 +17,7 @@ export function renderShell(state: AppState): string {
     ${activity(state)}
     <footer class="statusbar"><span>${escapeHtml(instance?.game_type ?? "Keine Instanz")}</span><span>${escapeHtml(profile?.name ?? "Kein Profil")}</span><span>${state.mods.length} Mods</span><span class="grow"></span><span class="status-${state.loading ? "busy" : "ok"}">${state.loading ? "Wird aktualisiert …" : "Bereit"}</span></footer>
     <div id="modal-host"></div>
+    <div id="context-menu-host"></div>
   </div>`;
 }
 

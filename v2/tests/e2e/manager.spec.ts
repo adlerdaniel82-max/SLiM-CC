@@ -3,7 +3,9 @@ import { expect, test } from "@playwright/test";
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     let downloads = 0;
+    (window as any).__commands = [];
     (window as any).__SLIMCC_BACKEND__ = { call: async (command: string) => {
+      (window as any).__commands.push(command);
       const data: Record<string, unknown> = {
         list_instances:[{id:"i",name:"Skyrim Special Edition",game_type:"skyrimse",install_path:"/game",data_path:"/game/Data",game_starter_path:"/game/skse64_loader.exe",runner_type:"wine",wine_prefix:null}],
         get_app_settings:{install_path:"/game",data_path:"/game/Data",wine_prefix:null,loot_executable_path:null,mod_download_path:"/downloads",language:"de",nexus_api_key_configured:true,nexus_api_key_masked:"abcd********wxyz"},
@@ -34,4 +36,20 @@ test("mod import offers archive, folder and Nexus paths", async ({ page }) => {
   await expect(page.getByRole("button", { name:"Datei …" })).toBeVisible();
   await expect(page.getByRole("button", { name:"Ordner …" })).toBeVisible();
   await expect(page.getByLabel("Nexus-Download-Link")).toBeVisible();
+  await page.getByLabel("Nexus-Download-Link").fill("nxm://temporary-test-link");
+  await page.waitForTimeout(4500);
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByLabel("Nexus-Download-Link")).toHaveValue("nxm://temporary-test-link");
+});
+
+test("installed mods expose a safe delete action in the context menu", async ({ page }) => {
+  await page.getByText("SkyUI", { exact:true }).first().click({ button:"right" });
+  await expect(page.getByRole("menuitem", { name:"Mod löschen …" })).toBeVisible();
+  await page.getByRole("menuitem", { name:"Mod löschen …" }).click();
+  await expect(page.getByRole("dialog", { name:"Mod löschen" })).toBeVisible();
+  await expect(page.getByText(/Downloadarchiv bleibt erhalten/)).toBeVisible();
+  await page.getByRole("button", { name:"Mod löschen" }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
+  const commands = await page.evaluate(() => (window as any).__commands as string[]);
+  expect(commands).toContain("delete_mod");
 });

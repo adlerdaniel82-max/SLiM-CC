@@ -36,6 +36,10 @@ export function fomodDialog(preview: FomodPackagePreview, selections: FomodSelec
 
 export function infoDialog(title: string, text: string): string { return dialog(title, `<p>${escapeHtml(text)}</p><footer><button class="primary-button" data-action="close-dialog">OK</button></footer>`); }
 
+export function deleteModDialog(modId: string, modName: string): string {
+  return dialog("Mod löschen", `<p>Soll <strong>${escapeHtml(modName)}</strong> wirklich aus SLiM-CC entfernt werden?</p><p class="hint">Die verwaltete Modkopie wird gelöscht. Das ursprüngliche Downloadarchiv bleibt erhalten.</p><footer><button type="button" data-action="close-dialog">Abbrechen</button><button class="danger-button" type="button" data-action="confirm-delete-mod" data-mod-id="${escapeHtml(modId)}">Mod löschen</button></footer>`);
+}
+
 function dialog(title: string, body: string, className = ""): string {
   return `<div class="modal-backdrop"><section class="dialog ${className}" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><header><h2 id="dialog-title">${title}</h2><button class="close" data-action="close-dialog" aria-label="Schließen">×</button></header><div class="dialog-body">${body}</div></section></div>`;
 }

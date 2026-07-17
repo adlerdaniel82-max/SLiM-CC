@@ -82,7 +82,8 @@ pub fn update_mod(
 
 #[tauri::command]
 pub fn delete_mod(state: State<AppState>, mod_id: String) -> SlimResult<()> {
-    state.with_connection_mut(|conn| mods::delete_mod(conn, &mod_id))
+    let workspace_root = state.workspace_root.clone();
+    state.with_connection_mut(|conn| mods::delete_mod(conn, &workspace_root, &mod_id))
 }
 
 #[tauri::command]

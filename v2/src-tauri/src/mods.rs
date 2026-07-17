@@ -80,15 +80,54 @@ pub fn update_mod(conn: &mut Connection, request: UpdateModRequest) -> SlimResul
     crate::workspace::get_mod_by_id(conn, &request.id)
 }
 
-pub fn delete_mod(conn: &mut Connection, mod_id: &str) -> SlimResult<()> {
+pub fn delete_mod(conn: &mut Connection, workspace_root: &Path, mod_id: &str) -> SlimResult<()> {
+    let (instance_id, installed_path): (String, String) = conn
+        .query_row(
+            "SELECT instance_id, installed_path FROM mods WHERE id = ?1",
+            params![mod_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => {
+                crate::error::SlimError::NotFound(format!("mod not found: {mod_id}"))
+            }
+            other => other.into(),
+        })?;
+    let installed_path = PathBuf::from(installed_path);
+    let mods_root = paths::mods_root(workspace_root, &instance_id);
+    paths::guard_descendant(&mods_root, &installed_path.join(".delete-guard"))?;
+
+    let quarantine = mods_root.join(format!(".deleting-{}", Uuid::new_v4()));
     let tx = conn.transaction()?;
-    let deleted = tx.execute("DELETE FROM mods WHERE id = ?1", params![mod_id])?;
+    if installed_path.exists() {
+        fs::rename(&installed_path, &quarantine)?;
+    }
+    let deleted = match tx.execute("DELETE FROM mods WHERE id = ?1", params![mod_id]) {
+        Ok(deleted) => deleted,
+        Err(error) => {
+            if quarantine.exists() {
+                let _ = fs::rename(&quarantine, &installed_path);
+            }
+            return Err(error.into());
+        }
+    };
     if deleted == 0 {
+        if quarantine.exists() {
+            let _ = fs::rename(&quarantine, &installed_path);
+        }
         return Err(crate::error::SlimError::NotFound(format!(
             "mod not found: {mod_id}"
         )));
     }
-    tx.commit()?;
+    if let Err(error) = tx.commit() {
+        if quarantine.exists() {
+            let _ = fs::rename(&quarantine, &installed_path);
+        }
+        return Err(error.into());
+    }
+    if quarantine.exists() {
+        fs::remove_dir_all(quarantine)?;
+    }
     Ok(())
 }
 
@@ -2659,6 +2698,48 @@ mod tests {
             .installed_path
             .starts_with(paths::mods_root(&workspace_root, "instance-a")));
 
+        let _ = fs::remove_dir_all(workspace_root);
+    }
+
+    #[test]
+    fn delete_mod_removes_only_the_managed_copy() {
+        let workspace_root = temp_workspace("delete-managed-mod");
+        let installed_path = paths::mods_root(&workspace_root, "instance-a").join("mod-a");
+        let download_path = workspace_root.join("downloads/Mod A.7z");
+        fs::create_dir_all(&installed_path).expect("create installed mod");
+        fs::create_dir_all(download_path.parent().unwrap()).expect("create downloads");
+        fs::write(installed_path.join("plugin.esp"), b"plugin").expect("write managed file");
+        fs::write(&download_path, b"archive").expect("write source archive");
+        let mut conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(include_str!("../migrations/001_initial.sql"))
+            .expect("create schema");
+        conn.execute(
+            "INSERT INTO instances (id, name, game_type, install_path, data_path, runner_type, created_at, updated_at)
+             VALUES ('instance-a', 'Skyrim', 'skyrimse', '/game', '/game/Data', 'manual', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert instance");
+        conn.execute(
+            "INSERT INTO mods (id, instance_id, name, source_path, installed_path, created_at, updated_at)
+             VALUES ('mod-a', 'instance-a', 'Mod A', ?1, ?2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            params![
+                download_path.to_string_lossy().to_string(),
+                installed_path.to_string_lossy().to_string()
+            ],
+        )
+        .expect("insert mod");
+
+        delete_mod(&mut conn, &workspace_root, "mod-a").expect("delete managed mod");
+
+        assert!(!installed_path.exists());
+        assert!(download_path.exists());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM mods WHERE id = 'mod-a'", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
         let _ = fs::remove_dir_all(workspace_root);
     }
 
