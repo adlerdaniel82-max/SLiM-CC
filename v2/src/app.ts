@@ -171,6 +171,7 @@ export class SlimApp {
       const activeInstanceId = instances.some((item) => item.id === this.store.state.activeInstanceId) ? this.store.state.activeInstanceId : instances[0]?.id ?? null;
       this.store.patch({ instances, settings, downloads, activeInstanceId });
       if (activeInstanceId) await this.loadInstance(activeInstanceId);
+      else this.store.patch({ profiles: [], mods: [], dependencies: [], profileMods: [], plugins: [], conflicts: [], activeProfileId: null, activeModId: null });
       this.store.log("success", "Daten wurden aktualisiert.");
     } finally { this.store.patch({ loading: false }); }
   }
@@ -183,6 +184,7 @@ export class SlimApp {
     const activeProfileId = profiles.some((item) => item.id === this.store.state.activeProfileId) ? this.store.state.activeProfileId : profiles[0]?.id ?? null;
     this.store.patch({ profiles, mods, dependencies, activeProfileId, activeModId: mods[0]?.id ?? null });
     if (activeProfileId) await this.loadProfile(instanceId, activeProfileId);
+    else this.store.patch({ profileMods: [], plugins: [], conflicts: [] });
   }
 
   private async loadProfile(instanceId: string, profileId: string): Promise<void> {
