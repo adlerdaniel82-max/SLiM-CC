@@ -1,0 +1,11 @@
+# Local-only README: contains development credentials and must never be committed.
+/README.md
+
+# Reproducible local dependencies and Rust debug build artifacts.
+/node_modules/
+/src-tauri/target/
+/v2/node_modules/
+/v2/dist/
+/v2/test-results/
+/v2/playwright-report/
+/v2/src-tauri/target/

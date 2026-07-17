@@ -1,0 +1,12 @@
+# Local-only README: contains development credentials and must never be committed.
+/README.md
+
+# Reproducible local dependencies and Rust debug build artifacts.
+/node_modules/
+/dist/
+/test-results/
+/playwright-report/
+/src-tauri/target/
+/release-artifacts/
+/src-tauri/test-fixtures/Example-Fomod.7z
+/src-tauri/.gen.root-owned-*

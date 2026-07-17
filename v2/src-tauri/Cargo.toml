@@ -1,0 +1,42 @@
+[package]
+name = "slim-cc-v2"
+version = "2.0.0"
+description = "Skyrim Linux Mod ControlCenter"
+authors = ["Daniel Adler"]
+edition = "2021"
+
+[lib]
+name = "slim_cc_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "slim-cc-v2"
+path = "src/main.rs"
+
+[dependencies]
+tauri = { version = "2.11.5", features = ["protocol-asset"] }
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-deep-link = "2.4.9"
+rfd = "0.16"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+anyhow = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+walkdir = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "5"
+roxmltree = "0.20"
+encoding_rs = "0.8"
+regex = "1"
+sevenz-rust = { version = "0.6", default-features = false }
+unrar-ng = "0.7.7"
+zip = { version = "2", default-features = false, features = ["bzip2", "deflate", "deflate64", "lzma", "zstd"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+
+[target."cfg(any(target_os = \"macos\", target_os = \"windows\", target_os = \"linux\"))".dependencies]
+tauri-plugin-single-instance = { version = "2.4.3", features = ["deep-link"] }
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
