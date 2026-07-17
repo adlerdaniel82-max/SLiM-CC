@@ -1,15 +1,16 @@
 import { escapeHtml, pathName } from "../core/dom";
+import slimccBanner from "../../assets/slimcc-banner.png";
 import { initialSelections } from "../features/fomod/selection";
 import type { AppState } from "../core/store";
-import type { FomodPackagePreview, FomodSelectionEntry, GameInstance, Profile } from "../types";
+import type { FomodPackagePreview, FomodSelectionEntry, GameInstance, ModDependencyStatus, NexusRequirementStatus, Profile } from "../types";
 
 export function instancesDialog(instances: GameInstance[]): string {
-  const rows = instances.map((instance) => `<tr><td class="primary">${escapeHtml(instance.name)}</td><td>${escapeHtml(instance.runner_type)}</td><td title="${escapeHtml(instance.install_path)}">${escapeHtml(instance.install_path)}</td></tr>`).join("");
-  return dialog("Instanzen verwalten", `<div class="table-wrap compact-table"><table class="data-table"><thead><tr><th>Name</th><th>Runner</th><th>Spielverzeichnis</th></tr></thead><tbody>${rows || `<tr><td colspan="3" class="empty">Noch keine Instanz vorhanden.</td></tr>`}</tbody></table></div><form data-form="create-instance"><h3>Neue Skyrim-SE-Instanz</h3><label>Name<input name="name" required placeholder="Skyrim Special Edition"></label><label>Spielverzeichnis<div class="path-picker"><input name="install_path" required><button type="button" data-action="pick-install-folder">Ordner …</button></div></label><label>Data-Verzeichnis<div class="path-picker"><input name="data_path" required><button type="button" data-action="pick-data-folder">Ordner …</button></div></label><label>Starter<div class="path-picker"><input name="game_starter_path" placeholder="SkyrimSELauncher.exe oder Startscript"><button type="button" data-action="pick-game-starter">Datei …</button></div></label><div class="form-columns"><label>Runner<select name="runner_type"><option value="wine">Wine</option><option value="native">Nativ</option><option value="proton">Proton</option><option value="manual">Manuell</option></select></label><label>Wine Prefix<input name="wine_prefix"></label></div><footer><button type="button" data-action="close-dialog">Schließen</button><button class="primary-button" type="submit">Instanz anlegen</button></footer></form>`, "wide");
+  const rows = instances.map((instance) => `<tr><td class="primary">${escapeHtml(instance.name)}</td><td>${escapeHtml(instance.runner_type)}</td><td title="${escapeHtml(instance.install_path)}">${escapeHtml(instance.install_path)}</td><td><button class="compact-button danger-outline" data-action="request-delete-instance" data-instance-id="${escapeHtml(instance.id)}">Löschen …</button></td></tr>`).join("");
+  return dialog("Instanzen verwalten", `<div class="table-wrap compact-table"><table class="data-table"><thead><tr><th>Name</th><th>Runner</th><th>Spielverzeichnis</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="empty">Noch keine Instanz vorhanden.</td></tr>`}</tbody></table></div><form data-form="create-instance"><h3>Neue Skyrim-SE-Instanz</h3><label>Name<input name="name" required placeholder="Skyrim Special Edition"></label><label>Spielverzeichnis<div class="path-picker"><input name="install_path" required><button type="button" data-action="pick-install-folder">Ordner …</button></div></label><label>Data-Verzeichnis<div class="path-picker"><input name="data_path" required><button type="button" data-action="pick-data-folder">Ordner …</button></div></label><label>Starter<div class="path-picker"><input name="game_starter_path" placeholder="SkyrimSELauncher.exe oder Startscript"><button type="button" data-action="pick-game-starter">Datei …</button></div></label><div class="form-columns"><label>Runner<select name="runner_type"><option value="wine">Wine</option><option value="native">Nativ</option><option value="proton">Proton</option><option value="manual">Manuell</option></select></label><label>Wine Prefix<input name="wine_prefix"></label></div><footer><button type="button" data-action="close-dialog">Schließen</button><button class="primary-button" type="submit">Instanz anlegen</button></footer></form>`, "wide");
 }
 
 export function profilesDialog(instance: GameInstance, profiles: Profile[]): string {
-  return dialog(`Profile · ${escapeHtml(instance.name)}`, `<div class="profile-list">${profiles.map((profile) => `<span>${escapeHtml(profile.name)}</span>`).join("") || `<p class="hint">Noch kein Profil vorhanden.</p>`}</div><form data-form="create-profile"><label>Neues Profil<input name="name" required placeholder="z. B. Vanilla+, Test oder Survival"></label><footer><button type="button" data-action="close-dialog">Schließen</button><button class="primary-button" type="submit">Profil anlegen</button></footer></form>`);
+  return dialog(`Profile · ${escapeHtml(instance.name)}`, `<div class="profile-list">${profiles.map((profile) => `<span><strong>${escapeHtml(profile.name)}</strong><button class="compact-button danger-outline" data-action="request-delete-profile" data-profile-id="${escapeHtml(profile.id)}">Löschen …</button></span>`).join("") || `<p class="hint">Noch kein Profil vorhanden.</p>`}</div><form data-form="create-profile"><label>Neues Profil<input name="name" required placeholder="z. B. Vanilla+, Test oder Survival"></label><footer><button type="button" data-action="close-dialog">Schließen</button><button class="primary-button" type="submit">Profil anlegen</button></footer></form>`);
 }
 
 export function importDialog(state: AppState, sourcePath = ""): string {
@@ -38,6 +39,27 @@ export function infoDialog(title: string, text: string): string { return dialog(
 
 export function deleteModDialog(modId: string, modName: string): string {
   return dialog("Mod löschen", `<p>Soll <strong>${escapeHtml(modName)}</strong> wirklich aus SLiM-CC entfernt werden?</p><p class="hint">Die verwaltete Modkopie wird gelöscht. Das ursprüngliche Downloadarchiv bleibt erhalten.</p><footer><button type="button" data-action="close-dialog">Abbrechen</button><button class="danger-button" type="button" data-action="confirm-delete-mod" data-mod-id="${escapeHtml(modId)}">Mod löschen</button></footer>`);
+}
+
+export function deleteInstanceDialog(instanceId: string, name: string): string {
+  return dialog("Instanz löschen", `<p>Soll die Instanz <strong>${escapeHtml(name)}</strong> wirklich gelöscht werden?</p><p class="notice">Alle darin verwalteten Profile, Mods und Workspace-Dateien werden entfernt. Das Spielverzeichnis selbst bleibt unverändert.</p><footer><button data-action="close-dialog">Abbrechen</button><button class="danger-button" data-action="confirm-delete-instance" data-instance-id="${escapeHtml(instanceId)}">Instanz löschen</button></footer>`);
+}
+
+export function deleteProfileDialog(profileId: string, name: string): string {
+  return dialog("Profil löschen", `<p>Soll das Profil <strong>${escapeHtml(name)}</strong> wirklich gelöscht werden?</p><p class="notice">Die installierten Mods bleiben erhalten; Profilaktivierung und Staging dieses Profils werden entfernt.</p><footer><button data-action="close-dialog">Abbrechen</button><button class="danger-button" data-action="confirm-delete-profile" data-profile-id="${escapeHtml(profileId)}">Profil löschen</button></footer>`);
+}
+
+export function dependencyDetailsDialog(modName: string, dependencies: ModDependencyStatus[], nexusRequirements: NexusRequirementStatus[]): string {
+  const missing = dependencies.filter((dependency) => !dependency.satisfied);
+  const missingNexus = nexusRequirements.filter((requirement) => !requirement.satisfied);
+  const dependencyRows = missing.map((dependency) => `<article><div><strong>${escapeHtml(dependency.target_value)}</strong><small>${escapeHtml(dependency.dependency_type)}${dependency.notes ? ` · ${escapeHtml(dependency.notes)}` : ""}</small></div></article>`).join("");
+  const nexusRows = missingNexus.map((requirement) => { const url = requirement.required_nexus_mod_id ? `https://www.nexusmods.com/${encodeURIComponent(requirement.required_game_domain)}/mods/${requirement.required_nexus_mod_id}` : null; return `<article><div><strong>${escapeHtml(requirement.required_name)}</strong><small>${escapeHtml(requirement.requirement_type)}${requirement.notes ? ` · ${escapeHtml(requirement.notes)}` : ""}</small></div><span class="grow"></span>${url ? `<button class="compact-button" data-action="open-dependency-url" data-url="${escapeHtml(url)}">Nexus öffnen</button>` : ""}</article>`; }).join("");
+  const body = dependencyRows || nexusRows ? `${dependencyRows}${nexusRows}` : `<p class="hint">Für diesen Mod sind keine fehlenden Abhängigkeiten gespeichert.</p>`;
+  return dialog(`Abhängigkeiten · ${escapeHtml(modName)}`, `<div class="dependency-details">${body}</div><footer><button class="primary-button" data-action="close-dialog">Schließen</button></footer>`, "wide");
+}
+
+export function aboutDialog(): string {
+  return dialog("Über SLiM-CC v2", `<div class="about-dialog"><img src="${escapeHtml(slimccBanner)}" alt="SLiM-CC"><p>Skyrim Linux Mod ControlCenter · Version ${__APP_VERSION__}</p><p>(c)Schnüddel Media - https://schnueddels.de - Daniel Adler</p></div><footer><button data-action="open-about-site">Website öffnen</button><button class="primary-button" data-action="close-dialog">OK</button></footer>`);
 }
 
 function dialog(title: string, body: string, className = ""): string {

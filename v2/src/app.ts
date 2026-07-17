@@ -4,8 +4,8 @@ import { closeMenus, installMenuBehavior } from "./core/menu";
 import { escapeHtml, pathName } from "./core/dom";
 import { Store } from "./core/store";
 import { normalizeSelection, selectionIsValid } from "./features/fomod/selection";
-import type { AppSettings, FomodPackagePreview, FomodSelectionEntry, GameInstance, ImportedModReport, ModConflictSummary, ModDependencySummary, ModDownloadCandidate, ModRecord, Profile, ProfileModEntry, ProfilePluginEntry, View } from "./types";
-import { collectionDialog, collectionResultDialog, deleteModDialog, fomodDialog, importDialog, infoDialog, instancesDialog, profilesDialog, settingsDialog } from "./ui/dialogs";
+import type { AppSettings, FomodPackagePreview, FomodSelectionEntry, GameInstance, ImportedModReport, ModConflictSummary, ModDependencyStatus, ModDependencySummary, ModDownloadCandidate, ModRecord, NexusRequirementStatus, Profile, ProfileModEntry, ProfilePluginEntry, View } from "./types";
+import { aboutDialog, collectionDialog, collectionResultDialog, deleteInstanceDialog, deleteModDialog, deleteProfileDialog, dependencyDetailsDialog, fomodDialog, importDialog, infoDialog, instancesDialog, profilesDialog, settingsDialog } from "./ui/dialogs";
 import { renderShell } from "./ui/shell";
 
 export class SlimApp {
@@ -37,6 +37,7 @@ export class SlimApp {
     if (!currentShell) this.root.innerHTML = renderShell(this.store.state);
     else {
       const openMenus = [...currentShell.querySelectorAll<HTMLDetailsElement>(".menu")].map((menu) => menu.open);
+      const downloadScrollTop = currentShell.querySelector<HTMLElement>(".downloads")?.scrollTop;
       const template = document.createElement("template"); template.innerHTML = renderShell(this.store.state);
       const freshShell = template.content.firstElementChild as HTMLElement;
       const currentChildren = [...currentShell.children]; const freshChildren = [...freshShell.children];
@@ -45,6 +46,7 @@ export class SlimApp {
         currentChildren[index]?.replaceWith(fresh);
       });
       currentShell.querySelectorAll<HTMLDetailsElement>(".menu").forEach((menu, index) => { menu.open = openMenus[index] ?? false; });
+      const downloads = currentShell.querySelector<HTMLElement>(".downloads"); if (downloads && downloadScrollTop !== undefined) downloads.scrollTop = downloadScrollTop;
     }
     const activity = this.root.querySelector<HTMLElement>("[data-role=activity]");
     if (activity) activity.hidden = !this.logVisible;
@@ -91,6 +93,13 @@ export class SlimApp {
         case "cancel-fomod": await this.cancelFomod(); break;
         case "delete-mod": { const mod = this.store.state.mods.find((item) => item.id === target.dataset.modId); if (mod) this.openDialog(deleteModDialog(mod.id, mod.name)); break; }
         case "confirm-delete-mod": await this.deleteMod(target.dataset.modId ?? ""); break;
+        case "mod-details": await this.showModDetails(target.dataset.modId ?? ""); break;
+        case "request-delete-instance": { const instance = this.store.state.instances.find((item) => item.id === target.dataset.instanceId); if (instance) this.openDialog(deleteInstanceDialog(instance.id, instance.name)); break; }
+        case "confirm-delete-instance": await this.deleteInstance(target.dataset.instanceId ?? ""); break;
+        case "request-delete-profile": { const profile = this.store.state.profiles.find((item) => item.id === target.dataset.profileId); if (profile) this.openDialog(deleteProfileDialog(profile.id, profile.name)); break; }
+        case "confirm-delete-profile": await this.deleteProfile(target.dataset.profileId ?? ""); break;
+        case "open-dependency-url": await this.api.call("open_external_url", { url: target.dataset.url }); break;
+        case "open-about-site": await this.api.call("open_external_url", { url: "https://schnueddels.de" }); break;
         case "settings": this.openDialog(settingsDialog(this.store.state)); break;
         case "toggle-log": this.logVisible = !this.logVisible; this.render(); break;
         case "deploy": await this.deploy(); break;
@@ -102,7 +111,7 @@ export class SlimApp {
         case "manage-instances": this.openDialog(instancesDialog(this.store.state.instances)); break;
         case "manage-profiles": { const instance = this.store.state.instances.find((item) => item.id === this.store.state.activeInstanceId); if (!instance) throw new Error("Bitte zuerst eine Instanz anlegen."); this.openDialog(profilesDialog(instance, this.store.state.profiles)); break; }
         case "manage-tools": this.openDialog(infoDialog("Anwendungen", "LOOT und weitere Werkzeuge werden unter Einstellungen konfiguriert.")); break;
-        case "about": this.openDialog(infoDialog("SLiM-CC v2", `Skyrim Linux Mod ControlCenter · Version ${__APP_VERSION__}`)); break;
+        case "about": this.openDialog(aboutDialog()); break;
         case "quit": window.close(); break;
       }
     } catch (error) { this.fail(error); }
@@ -114,8 +123,8 @@ export class SlimApp {
     event.preventDefault(); closeMenus(this.root);
     if (this.store.state.activeModId !== row.dataset.modId) this.store.patch({ activeModId: row.dataset.modId });
     const host = this.root.querySelector<HTMLElement>("#context-menu-host"); if (!host) return;
-    const left = Math.min(event.clientX, window.innerWidth - 210); const top = Math.min(event.clientY, window.innerHeight - 90);
-    host.innerHTML = `<div class="context-menu" role="menu" style="left:${Math.max(4, left)}px;top:${Math.max(4, top)}px"><button role="menuitem" data-action="delete-mod" data-mod-id="${escapeHtml(row.dataset.modId)}">Mod löschen …</button></div>`;
+    const left = Math.min(event.clientX, window.innerWidth - 210); const top = Math.min(event.clientY, window.innerHeight - 120);
+    host.innerHTML = `<div class="context-menu" role="menu" style="left:${Math.max(4, left)}px;top:${Math.max(4, top)}px"><button role="menuitem" data-action="mod-details" data-mod-id="${escapeHtml(row.dataset.modId)}">Details …</button><button role="menuitem" data-action="delete-mod" data-mod-id="${escapeHtml(row.dataset.modId)}">Mod löschen …</button></div>`;
   }
 
   private closeContextMenu(): void { const host = this.root.querySelector<HTMLElement>("#context-menu-host"); if (host) host.innerHTML = ""; }
@@ -199,7 +208,11 @@ export class SlimApp {
     const before = new Set(this.store.state.downloads.map((item) => item.path));
     const added = downloads.filter((item) => !before.has(item.path)).length;
     const changed = !sameDownloads(this.store.state.downloads, downloads);
-    if (changed) this.store.patch({ downloads });
+    if (changed) {
+      const scrollTop = this.root.querySelector<HTMLElement>(".downloads")?.scrollTop ?? 0;
+      this.store.patch({ downloads });
+      const list = this.root.querySelector<HTMLElement>(".downloads"); if (list) list.scrollTop = scrollTop;
+    }
     if (!silent || added) this.store.log(added ? "success" : "info", added ? `${added} neue Download-Datei(en) erkannt.` : "Downloadordner aktualisiert.");
   }
 
@@ -338,6 +351,27 @@ export class SlimApp {
     await this.api.call("delete_mod", { modId }); this.closeDialog();
     if (this.store.state.activeInstanceId) await this.loadInstance(this.store.state.activeInstanceId);
     this.store.log("success", `${mod.name} wurde gelöscht. Das Downloadarchiv bleibt erhalten.`);
+  }
+
+  private async deleteInstance(instanceId: string): Promise<void> {
+    const instance = this.store.state.instances.find((item) => item.id === instanceId); if (!instance) return;
+    await this.api.call("delete_instance", { instanceId }); this.closeDialog();
+    await this.refreshAll(); this.store.log("success", `Instanz ${instance.name} wurde gelöscht.`);
+  }
+
+  private async deleteProfile(profileId: string): Promise<void> {
+    const profile = this.store.state.profiles.find((item) => item.id === profileId); if (!profile) return;
+    await this.api.call("delete_profile", { profileId }); this.closeDialog();
+    await this.refreshAll(); this.store.log("success", `Profil ${profile.name} wurde gelöscht.`);
+  }
+
+  private async showModDetails(modId: string): Promise<void> {
+    const mod = this.store.state.mods.find((item) => item.id === modId); if (!mod) return;
+    const [dependencies, nexusRequirements] = await Promise.all([
+      this.api.call<ModDependencyStatus[]>("list_mod_dependencies", { modId }),
+      this.api.call<NexusRequirementStatus[]>("list_nexus_requirement_status", { modId })
+    ]);
+    this.openDialog(dependencyDetailsDialog(mod.name, dependencies, nexusRequirements));
   }
 
   private async analyzeCollection(form: HTMLFormElement): Promise<void> {

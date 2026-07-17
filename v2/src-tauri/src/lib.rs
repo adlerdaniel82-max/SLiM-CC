@@ -27,6 +27,7 @@ use tauri::Manager;
 use tauri_plugin_deep_link::DeepLinkExt;
 
 pub fn run() {
+    configure_webkit_runtime();
     let state = AppState::initialize().expect("failed to initialize SLiM-CC state");
 
     let mut builder = tauri::Builder::default();
@@ -121,3 +122,15 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running SLiM-CC");
 }
+
+#[cfg(target_os = "linux")]
+fn configure_webkit_runtime() {
+    // WebKitGTK's DMA-BUF/GBM teardown can crash inside Mesa when its web process exits.
+    // Respect an explicit user setting, otherwise use WebKit's supported fallback renderer.
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_webkit_runtime() {}

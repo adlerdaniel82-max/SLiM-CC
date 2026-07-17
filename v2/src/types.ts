@@ -25,6 +25,15 @@ export interface ModDownloadCandidate {
   note: string | null; stable?: boolean;
 }
 export interface ModDependencySummary { mod_id: string; dependency_count: number; missing_count: number; status: string }
+export interface ModDependencyStatus {
+  id: string; mod_id: string; dependency_type: string; target_mod_id: string | null;
+  target_value: string; notes: string; satisfied: boolean; status: string;
+}
+export interface NexusRequirementStatus {
+  id: string; mod_id: string; required_game_domain: string; required_nexus_mod_id: number | null;
+  required_name: string; requirement_type: string; source: string; notes: string; fetched_at: string;
+  matched_mod_id: string | null; matched_mod_name: string | null; satisfied: boolean; status: string;
+}
 export interface ModConflictSummary {
   mod_id: string; overwrites_mod_ids: string[]; overwritten_by_mod_ids: string[];
   winning_file_count: number; losing_file_count: number; file_kinds: string[];

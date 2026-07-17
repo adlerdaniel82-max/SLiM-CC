@@ -88,7 +88,7 @@ function plugins(state: AppState): string {
 
 function downloads(state: AppState): string {
   return `<div class="panel-head"><strong>Downloadordner</strong><span class="path">${escapeHtml(state.settings?.mod_download_path ?? "Nicht konfiguriert")}</span><span class="grow"></span><button data-action="analyze-collection">Collection …</button><button class="primary-button" data-action="refresh-downloads">↻ Aktualisieren</button></div>
-    <div class="downloads">${state.downloads.map((item) => `<article class="download-card ${item.installed ? "installed" : ""}"><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.note ?? item.entry_type)}</small></div><span class="grow"></span>${item.installed ? `<span class="state-label">Installiert</span>` : `<button data-action="import-download" data-path="${escapeHtml(item.path)}">Installieren</button>`}</article>`).join("") || `<div class="empty-state">Keine importierbaren Dateien gefunden.<button data-action="refresh-downloads">Jetzt aktualisieren</button></div>`}</div>`;
+    <div class="downloads">${state.downloads.map((item) => `<article class="download-card ${item.installed ? "installed" : ""}"><div><strong>${escapeHtml(item.name)}</strong>${item.note ? `<small>${escapeHtml(item.note)}</small>` : ""}</div><span class="grow"></span>${item.installed ? `<span class="state-label">Installiert</span>` : `<button class="compact-button" data-action="import-download" data-path="${escapeHtml(item.path)}">Installieren</button>`}</article>`).join("") || `<div class="empty-state">Keine importierbaren Dateien gefunden.<button data-action="refresh-downloads">Jetzt aktualisieren</button></div>`}</div>`;
 }
 
 function conflicts(state: AppState): string {
