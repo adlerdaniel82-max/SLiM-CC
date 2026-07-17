@@ -87,7 +87,7 @@ fn looks_like_data_root(root: &Path) -> SlimResult<bool> {
         let entry = entry?;
         if let Some(ext) = entry.path().extension().and_then(|v| v.to_str()) {
             let ext = ext.to_lowercase();
-            if ["esm", "esp", "esl"].contains(&ext.as_str()) {
+            if ["esm", "esp", "esl", "bsa", "ba2"].contains(&ext.as_str()) {
                 return Ok(true);
             }
         }
@@ -320,6 +320,18 @@ mod tests {
         let detected = detect_data_root(&root).expect("detect deeply nested data folder");
 
         assert_eq!(detected, nested);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn detect_data_root_accepts_archive_only_mods() {
+        let root = temp_root("archive-only-mod");
+        std::fs::write(root.join("aMidianBorn_ContentAddon.bsa"), b"archive").expect("write BSA");
+
+        assert_eq!(detect_data_root(&root).expect("detect BSA root"), root);
+        let files = scan_mod_files("amidian", &root).expect("scan BSA-only mod");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].original_rel_path, "aMidianBorn_ContentAddon.bsa");
         let _ = std::fs::remove_dir_all(root);
     }
 

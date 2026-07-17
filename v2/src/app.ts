@@ -216,19 +216,22 @@ export class SlimApp {
   private async prepareImport(form: HTMLFormElement): Promise<void> {
     const data = new FormData(form); let sourcePath = String(data.get("source_path") ?? "").trim();
     const nexusUrl = String(data.get("nexus_url") ?? "").trim();
-    if (!sourcePath && nexusUrl) {
-      this.store.patch({ loading: true }); this.store.log("info", "Nexus-Download wird gestartet …");
-      const download = await this.api.call<{path: string; file_name: string; bytes_written: number}>("download_nexus_file", { request: { source_url: nexusUrl } });
-      sourcePath = download.path; this.store.log("success", `${download.file_name} wurde vollständig heruntergeladen.`);
-    }
-    const name = String(data.get("name") ?? "").trim() || pathName(sourcePath).replace(/\.(zip|7z|rar|fomod)$/i, "");
-    if (!sourcePath || !this.store.state.activeInstanceId) throw new Error("Eine lokale Quelle oder ein Nexus-Download-Link wird benötigt.");
-    this.pendingImport = { sourcePath, name }; this.store.patch({ loading: true });
+    if ((!sourcePath && !nexusUrl) || !this.store.state.activeInstanceId) throw new Error("Eine lokale Quelle oder ein Nexus-Download-Link wird benötigt.");
+    const progress = this.showOperationProgress(form, nexusUrl && !sourcePath ? "Nexus-Datei wird heruntergeladen …" : "Modpaket wird analysiert …");
+    this.store.patch({ loading: true });
     try {
+      if (!sourcePath && nexusUrl) {
+        this.store.log("info", "Nexus-Download wird gestartet …");
+        const download = await this.api.call<{path: string; file_name: string; bytes_written: number}>("download_nexus_file", { request: { source_url: nexusUrl } });
+        sourcePath = download.path; this.store.log("success", `${download.file_name} wurde vollständig heruntergeladen.`);
+      }
+      const name = String(data.get("name") ?? "").trim() || pathName(sourcePath).replace(/\.(zip|7z|rar|fomod)$/i, "");
+      this.pendingImport = { sourcePath, name };
+      progress.update("Archiv wird entpackt und auf FOMOD-Inhalte geprüft …");
       const preview = await this.api.call<FomodPackagePreview>("preview_fomod_package", { packageRoot: sourcePath, instanceId: this.store.state.activeInstanceId, profileId: this.store.state.activeProfileId });
       if (preview.has_fomod) { this.store.patch({ fomod: preview }); this.openDialog(fomodDialog(preview)); this.readFomodSelections(); }
-      else await this.importPrepared(null);
-    } finally { this.store.patch({ loading: false }); }
+      else { progress.update("Moddateien werden in den sicheren Workspace importiert …"); await this.importPrepared(null); }
+    } finally { progress.finish(); this.store.patch({ loading: false }); }
   }
 
   private async importPrepared(selection: { selections: FomodSelectionEntry[] } | null): Promise<void> {
@@ -253,7 +256,28 @@ export class SlimApp {
   private async finishFomod(): Promise<void> {
     const preview = this.store.state.fomod; if (!preview) return; this.readFomodSelections();
     if (!selectionIsValid(preview, this.fomodSelections)) throw new Error("Die FOMOD-Auswahl ist noch nicht vollständig.");
-    await this.importPrepared({ selections: this.fomodSelections });
+    const form = this.root.querySelector<HTMLFormElement>('form[data-form="fomod"]');
+    const progress = form ? this.showOperationProgress(form, "FOMOD-Auswahl wird installiert …") : null;
+    this.store.patch({ loading: true });
+    try { await this.importPrepared({ selections: this.fomodSelections }); }
+    finally { progress?.finish(); this.store.patch({ loading: false }); }
+  }
+
+  private showOperationProgress(form: HTMLFormElement, initialMessage: string): { update: (message: string) => void; finish: () => void } {
+    const controls = [...form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button")];
+    const originalDisabled = controls.map((control) => control.disabled);
+    controls.forEach((control) => { control.disabled = true; });
+    const panel = document.createElement("div"); panel.className = "operation-progress"; panel.setAttribute("role", "status"); panel.setAttribute("aria-live", "polite");
+    panel.innerHTML = '<span class="progress-spinner" aria-hidden="true"></span><span><strong></strong><small>Große Archive können mehrere Minuten benötigen. SLiM-CC arbeitet weiter.</small></span>';
+    const message = panel.querySelector<HTMLElement>("strong"); if (message) message.textContent = initialMessage;
+    const elapsed = document.createElement("small"); elapsed.className = "progress-elapsed"; panel.querySelector("span:last-child")?.append(elapsed);
+    form.prepend(panel); const started = Date.now();
+    const updateElapsed = () => { elapsed.textContent = `Verstrichen: ${Math.floor((Date.now() - started) / 1000)} s`; };
+    updateElapsed(); const timer = window.setInterval(updateElapsed, 1000);
+    return {
+      update: (text) => { if (message) message.textContent = text; },
+      finish: () => { window.clearInterval(timer); panel.remove(); controls.forEach((control, index) => { control.disabled = originalDisabled[index]; }); }
+    };
   }
 
   private async reconfigureFomod(): Promise<void> {

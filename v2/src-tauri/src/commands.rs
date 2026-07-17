@@ -258,17 +258,23 @@ pub fn update_profile_plugins(
 }
 
 #[tauri::command]
-pub fn import_mod_folder(
-    state: State<AppState>,
+pub async fn import_mod_folder(
+    state: State<'_, AppState>,
     request: ImportModFolderRequest,
 ) -> SlimResult<ImportedModReport> {
     let workspace_root = state.workspace_root.clone();
-    state.with_connection_mut(|conn| mods::import_mod_folder(conn, &workspace_root, request))
+    let database_path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = crate::db::open_database(&database_path)?;
+        mods::import_mod_folder(&mut conn, &workspace_root, request)
+    })
+    .await
+    .map_err(|error| crate::error::SlimError::Process(format!("import worker failed: {error}")))?
 }
 
 #[tauri::command]
-pub fn preview_fomod_package(
-    state: State<AppState>,
+pub async fn preview_fomod_package(
+    state: State<'_, AppState>,
     package_root: String,
     instance_id: Option<String>,
     profile_id: Option<String>,
@@ -284,12 +290,17 @@ pub fn preview_fomod_package(
         })?),
         None => None,
     };
-    mods::preview_fomod_package_with_context(
-        &state.workspace_root,
-        package_root.as_path(),
-        None,
-        dependency_context.as_ref(),
-    )
+    let workspace_root = state.workspace_root.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        mods::preview_fomod_package_with_context(
+            &workspace_root,
+            package_root.as_path(),
+            None,
+            dependency_context.as_ref(),
+        )
+    })
+    .await
+    .map_err(|error| crate::error::SlimError::Process(format!("preview worker failed: {error}")))?
 }
 
 #[tauri::command]

@@ -15,7 +15,9 @@ test.beforeEach(async ({ page }) => {
         list_profile_mods:[{mod_id:"m",mod_name:"SkyUI",version:"5.2",source_path:"/downloads/SkyUI.7z",installed_path:"/mods/m",enabled:true,priority:10,plugin_count:1,rule_type:null,rule_target_mod_id:null,rule_weight:0}],
         list_profile_plugins:[{plugin_id:"pl",mod_id:"m",mod_name:"SkyUI",filename:"SkyUI_SE.esp",plugin_type:"esp",normalized_rel_path:"skyui_se.esp",mod_enabled:true,enabled:true,priority:10,dependency_count:0,missing_dependency_count:0,dependency_status:"ok"}], list_mod_conflict_summary:[]
       };
-      if(command === "list_mod_download_candidates") { downloads++; return downloads > 1 ? [{name:"New Mod",path:"/downloads/New Mod.7z",entry_type:"archive",importable:true,installed:false,note:null}] : []; }
+      if(command === "list_mod_download_candidates") { downloads++; return downloads > 1 ? Array.from({length:40}, (_, index) => ({name:index === 0 ? "New Mod" : `New Mod ${index}`,path:`/downloads/New Mod ${index}.7z`,entry_type:"archive",importable:true,installed:false,note:null})) : []; }
+      if(command === "preview_fomod_package") { await new Promise((resolve) => setTimeout(resolve, 500)); return {has_fomod:false,source_path:"/tmp/preview",module_name:null,steps:[],validation_notes:[]}; }
+      if(command === "import_mod_folder") return {mod_record:{name:"Test Mod"},files_scanned:1,plugins_discovered:0};
       return data[command];
     }};
   });
@@ -28,6 +30,18 @@ test("compact manager exposes primary workflows", async ({ page }) => {
   await page.getByRole("button", { name:"Downloads" }).first().click();
   await page.getByRole("button", { name:/Aktualisieren/ }).last().click();
   await expect(page.getByText("New Mod", { exact:true })).toBeVisible();
+  const bounds = await page.locator(".downloads").evaluate((element) => ({ clientHeight:element.clientHeight, scrollHeight:element.scrollHeight, bottom:element.getBoundingClientRect().bottom, viewport:window.innerHeight }));
+  expect(bounds.scrollHeight).toBeGreaterThan(bounds.clientHeight);
+  expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewport);
+});
+
+test("large imports show responsive progress", async ({ page }) => {
+  await page.getByRole("button", { name:/Installieren/ }).first().click();
+  await page.getByLabel("Quelle").fill("/downloads/large-mod.7z");
+  await page.getByRole("button", { name:"Weiter" }).click();
+  await expect(page.getByRole("status")).toContainText("Archiv wird entpackt");
+  await expect(page.getByRole("status")).toContainText("SLiM-CC arbeitet weiter");
+  await expect(page.getByRole("dialog")).toBeHidden();
 });
 
 test("mod import offers archive, folder and Nexus paths", async ({ page }) => {
