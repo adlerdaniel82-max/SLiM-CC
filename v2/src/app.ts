@@ -33,12 +33,19 @@ export class SlimApp {
   }
 
   private render(): void {
-    const openDialog = this.root.querySelector<HTMLElement>("#modal-host")?.firstElementChild;
-    const openContextMenu = this.root.querySelector<HTMLElement>("#context-menu-host")?.firstElementChild;
-    openDialog?.remove(); openContextMenu?.remove();
-    this.root.innerHTML = renderShell(this.store.state);
-    if (openDialog) this.root.querySelector("#modal-host")?.append(openDialog);
-    if (openContextMenu) this.root.querySelector("#context-menu-host")?.append(openContextMenu);
+    const currentShell = this.root.querySelector<HTMLElement>(":scope > .app-shell");
+    if (!currentShell) this.root.innerHTML = renderShell(this.store.state);
+    else {
+      const openMenus = [...currentShell.querySelectorAll<HTMLDetailsElement>(".menu")].map((menu) => menu.open);
+      const template = document.createElement("template"); template.innerHTML = renderShell(this.store.state);
+      const freshShell = template.content.firstElementChild as HTMLElement;
+      const currentChildren = [...currentShell.children]; const freshChildren = [...freshShell.children];
+      freshChildren.forEach((fresh, index) => {
+        if (fresh.id === "modal-host" || fresh.id === "context-menu-host") return;
+        currentChildren[index]?.replaceWith(fresh);
+      });
+      currentShell.querySelectorAll<HTMLDetailsElement>(".menu").forEach((menu, index) => { menu.open = openMenus[index] ?? false; });
+    }
     const activity = this.root.querySelector<HTMLElement>("[data-role=activity]");
     if (activity) activity.hidden = !this.logVisible;
   }
@@ -191,7 +198,9 @@ export class SlimApp {
     const downloads = await this.api.call<ModDownloadCandidate[]>("list_mod_download_candidates", { instanceId: this.store.state.activeInstanceId });
     const before = new Set(this.store.state.downloads.map((item) => item.path));
     const added = downloads.filter((item) => !before.has(item.path)).length;
-    this.store.patch({ downloads }); if (!silent || added) this.store.log(added ? "success" : "info", added ? `${added} neue Download-Datei(en) erkannt.` : "Downloadordner aktualisiert.");
+    const changed = !sameDownloads(this.store.state.downloads, downloads);
+    if (changed) this.store.patch({ downloads });
+    if (!silent || added) this.store.log(added ? "success" : "info", added ? `${added} neue Download-Datei(en) erkannt.` : "Downloadordner aktualisiert.");
   }
 
   private startDownloadWatcher(): void {
@@ -364,4 +373,13 @@ export class SlimApp {
   private openDialog(html: string): void { const host = this.root.querySelector<HTMLElement>("#modal-host"); if (host) host.innerHTML = html; }
   private closeDialog(): void { const host = this.root.querySelector<HTMLElement>("#modal-host"); if (host) host.innerHTML = ""; }
   private fail(error: unknown): void { const message = error instanceof Error ? error.message : String(error); this.store.log("error", message); this.store.patch({ loading: false }); }
+}
+
+function sameDownloads(left: ModDownloadCandidate[], right: ModDownloadCandidate[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((item, index) => {
+    const other = right[index];
+    return other !== undefined && item.name === other.name && item.path === other.path && item.entry_type === other.entry_type
+      && item.importable === other.importable && item.installed === other.installed && item.note === other.note;
+  });
 }

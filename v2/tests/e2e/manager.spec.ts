@@ -4,7 +4,7 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     let downloads = 0;
     (window as any).__commands = [];
-    (window as any).__SLIMCC_BACKEND__ = { call: async (command: string) => {
+    (window as any).__SLIMCC_BACKEND__ = { call: async (command: string, args?: Record<string, unknown>) => {
       (window as any).__commands.push(command);
       const data: Record<string, unknown> = {
         list_instances:[{id:"i",name:"Skyrim Special Edition",game_type:"skyrimse",install_path:"/game",data_path:"/game/Data",game_starter_path:"/game/skse64_loader.exe",runner_type:"wine",wine_prefix:null}],
@@ -16,7 +16,11 @@ test.beforeEach(async ({ page }) => {
         list_profile_plugins:[{plugin_id:"pl",mod_id:"m",mod_name:"SkyUI",filename:"SkyUI_SE.esp",plugin_type:"esp",normalized_rel_path:"skyui_se.esp",mod_enabled:true,enabled:true,priority:10,dependency_count:0,missing_dependency_count:0,dependency_status:"ok"}], list_mod_conflict_summary:[]
       };
       if(command === "list_mod_download_candidates") { downloads++; return downloads > 1 ? Array.from({length:40}, (_, index) => ({name:index === 0 ? "New Mod" : `New Mod ${index}`,path:`/downloads/New Mod ${index}.7z`,entry_type:"archive",importable:true,installed:false,note:null})) : []; }
-      if(command === "preview_fomod_package") { await new Promise((resolve) => setTimeout(resolve, 500)); return {has_fomod:false,source_path:"/tmp/preview",module_name:null,steps:[],validation_notes:[]}; }
+      if(command === "preview_fomod_package") {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        if(String(args?.packageRoot).includes("fomod")) return {has_fomod:true,source_path:"/tmp/preview",module_name:"Test Installer",validation_notes:[],module_dependencies:null,required_files:[],conditional_file_installs:[],saved_selection:null,steps:[{name:"Komponenten",visible:null,groups:[{name:"Variante",selection_mode:"SelectExactlyOne",visible:null,options:[{id:"main",name:"Hauptdatei",description:"Testauswahl",image_path:null,default_selected:true,file_count:1,condition_flags:[],dependencies:null,dependency_context_available:true,files:[]}]}]}]};
+        return {has_fomod:false,source_path:"/tmp/preview",module_name:null,steps:[],validation_notes:[]};
+      }
       if(command === "import_mod_folder") return {mod_record:{name:"Test Mod"},files_scanned:1,plugins_discovered:0};
       return data[command];
     }};
@@ -44,6 +48,29 @@ test("large imports show responsive progress", async ({ page }) => {
   await expect(page.getByRole("dialog")).toBeHidden();
 });
 
+test("automatic download refresh preserves menus, focus and text selection", async ({ page }) => {
+  await page.getByText("Datei", { exact:true }).click();
+  await expect(page.locator("details.menu").first()).toHaveAttribute("open", "");
+  await page.waitForTimeout(4500);
+  await expect(page.locator("details.menu").first()).toHaveAttribute("open", "");
+  await page.getByRole("button", { name:/Mod installieren/ }).first().click();
+  const input = page.getByLabel("Nexus-Download-Link");
+  await input.fill("nxm://selection-survives-refresh");
+  await input.evaluate((element: HTMLInputElement) => { element.focus(); element.setSelectionRange(6, 15); });
+  await page.waitForTimeout(4500);
+  await expect(input).toBeFocused();
+  await expect(input).toHaveJSProperty("selectionStart", 6);
+  await expect(input).toHaveJSProperty("selectionEnd", 15);
+});
+
+test("FOMOD packages open their installer dialog", async ({ page }) => {
+  await page.getByRole("button", { name:/Installieren/ }).first().click();
+  await page.getByLabel("Quelle").fill("/downloads/test-fomod.7z");
+  await page.getByRole("button", { name:"Weiter" }).click();
+  await expect(page.getByRole("dialog", { name:/FOMOD · Test Installer/ })).toBeVisible();
+  await expect(page.getByText("Hauptdatei", { exact:true })).toBeVisible();
+});
+
 test("mod import offers archive, folder and Nexus paths", async ({ page }) => {
   await page.getByRole("button", { name:/Installieren/ }).first().click();
   await expect(page.getByRole("dialog")).toBeVisible();
@@ -58,6 +85,8 @@ test("mod import offers archive, folder and Nexus paths", async ({ page }) => {
 
 test("installed mods expose a safe delete action in the context menu", async ({ page }) => {
   await page.getByText("SkyUI", { exact:true }).first().click({ button:"right" });
+  await expect(page.getByRole("menuitem", { name:"Mod löschen …" })).toBeVisible();
+  await page.waitForTimeout(4500);
   await expect(page.getByRole("menuitem", { name:"Mod löschen …" })).toBeVisible();
   await page.getByRole("menuitem", { name:"Mod löschen …" }).click();
   await expect(page.getByRole("dialog", { name:"Mod löschen" })).toBeVisible();
