@@ -87,7 +87,7 @@ export class SlimApp {
         case "manage-instances": this.openDialog(instancesDialog(this.store.state.instances)); break;
         case "manage-profiles": { const instance = this.store.state.instances.find((item) => item.id === this.store.state.activeInstanceId); if (!instance) throw new Error("Bitte zuerst eine Instanz anlegen."); this.openDialog(profilesDialog(instance, this.store.state.profiles)); break; }
         case "manage-tools": this.openDialog(infoDialog("Anwendungen", "LOOT und weitere Werkzeuge werden unter Einstellungen konfiguriert.")); break;
-        case "about": this.openDialog(infoDialog("SLiM-CC v2", "Skyrim Linux Mod ControlCenter · Version 2.0.0")); break;
+        case "about": this.openDialog(infoDialog("SLiM-CC v2", `Skyrim Linux Mod ControlCenter · Version ${__APP_VERSION__}`)); break;
         case "quit": window.close(); break;
       }
     } catch (error) { this.fail(error); }

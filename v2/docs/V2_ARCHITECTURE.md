@@ -1,5 +1,7 @@
 # SLiM-CC v2 Architecture
 
+The authoritative release number is maintained in [`VERSION.md`](VERSION.md).
+
 ## Frontend
 
 The frontend is split into small modules:

@@ -7,7 +7,7 @@ export function renderShell(state: AppState): string {
   const instance = state.instances.find((item) => item.id === state.activeInstanceId);
   const profile = state.profiles.find((item) => item.id === state.activeProfileId);
   return `<div class="app-shell">
-    <header class="titlebar"><span class="brand-mark">▰</span><span>${escapeHtml(instance?.name ?? "SLiM-CC v2")}</span><span class="version">Mod ControlCenter 2.0.0</span></header>
+    <header class="titlebar"><span class="brand-mark">▰</span><span>${escapeHtml(instance?.name ?? "SLiM-CC v2")}</span><span class="version">Mod ControlCenter ${__APP_VERSION__}</span></header>
     ${menuBar()}
     ${toolBar(state)}
     <main class="workspace">
