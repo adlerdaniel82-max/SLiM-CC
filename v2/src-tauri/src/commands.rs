@@ -346,7 +346,7 @@ pub fn launch_game(
     instance_id: String,
     profile_id: String,
 ) -> SlimResult<tools::CommandPreview> {
-    let vfs_status = prepare_profile_vfs(state.clone(), instance_id.clone(), profile_id)?;
+    let vfs_status = prepare_profile_vfs(state.clone(), instance_id.clone(), profile_id.clone())?;
     state.with_connection(|conn| {
         let instance = instance::get_instance_by_id(conn, &instance_id)?;
         let settings = settings::load_settings(conn)?;
@@ -370,6 +370,13 @@ pub fn launch_game(
                 )));
             }
         };
+        let wine_prefix = instance.wine_prefix.or(settings.wine_prefix);
+        if matches!(
+            runner_type,
+            tools::RunnerType::Wine | tools::RunnerType::Proton
+        ) {
+            instance::validate_wine_prefix(&instance.install_path, wine_prefix.as_deref())?;
+        }
         let executable_relative = real_executable_path
             .strip_prefix(&instance.install_path)
             .map_err(|_| {
@@ -383,7 +390,7 @@ pub fn launch_game(
             executable_path,
             arguments: Vec::new(),
             working_directory: Some(vfs_status.mount_path),
-            wine_prefix: instance.wine_prefix.or(settings.wine_prefix),
+            wine_prefix,
         };
         let mut preview = tools::build_command_preview(&request)?;
         let child = tools::spawn_tool(&request)?;
@@ -467,6 +474,17 @@ pub fn list_tool_profiles(state: State<AppState>) -> SlimResult<Vec<tools::ToolP
 }
 
 #[tauri::command]
+pub fn list_tool_executable_candidates(
+    state: State<AppState>,
+    instance_id: String,
+    profile_id: String,
+) -> SlimResult<Vec<tools::ToolExecutableCandidate>> {
+    state.with_connection(|conn| {
+        tools::list_tool_executable_candidates(conn, &instance_id, &profile_id)
+    })
+}
+
+#[tauri::command]
 pub fn upsert_tool_profile(
     state: State<AppState>,
     request: tools::UpdateToolProfileRequest,
@@ -489,7 +507,7 @@ pub fn launch_tool_profile_vfs(
     instance_id: String,
     profile_id: String,
 ) -> SlimResult<tools::CommandPreview> {
-    let vfs_status = prepare_profile_vfs(state.clone(), instance_id.clone(), profile_id)?;
+    let vfs_status = prepare_profile_vfs(state.clone(), instance_id.clone(), profile_id.clone())?;
     state.with_connection(|conn| {
         let instance = instance::get_instance_by_id(conn, &instance_id)?;
         let profile = tools::get_tool_profile(conn, &tool_key)?;
@@ -499,14 +517,17 @@ pub fn launch_tool_profile_vfs(
                 profile.display_name
             )));
         }
-        let real_executable = profile.executable_path.clone().ok_or_else(|| {
+        let configured_executable = profile.executable_path.clone().ok_or_else(|| {
             crate::error::SlimError::InvalidPath(format!(
                 "Programmdatei ist nicht konfiguriert: {}",
                 profile.display_name
             ))
         })?;
-        let executable_path = rewrite_path_into_vfs(
-            &real_executable,
+        let executable_path = resolve_tool_path_into_vfs(
+            conn,
+            &instance_id,
+            &profile_id,
+            &configured_executable,
             &instance.install_path,
             &vfs_status.mount_path,
         )?;
@@ -522,14 +543,25 @@ pub fn launch_tool_profile_vfs(
         if settings.wine_prefix.is_none() {
             settings.wine_prefix = instance.wine_prefix.clone();
         }
-        let mut request = tools::build_tool_launch_request(&profile, real_executable, &settings)?;
+        let mut request =
+            tools::build_tool_launch_request(&profile, configured_executable, &settings)?;
         request.executable_path = executable_path;
-        request.working_directory = match request.working_directory.as_deref() {
-            Some(path) => Some(rewrite_path_into_vfs(
+        request.working_directory = match profile.working_directory.as_deref() {
+            Some(path) => Some(resolve_tool_path_into_vfs(
+                conn,
+                &instance_id,
+                &profile_id,
                 path,
                 &instance.install_path,
                 &vfs_status.mount_path,
             )?),
+            None if matches!(
+                profile.tool_key.to_ascii_lowercase().as_str(),
+                "nemesis" | "fnis" | "pandora" | "bodyslide"
+            ) =>
+            {
+                request.executable_path.parent().map(PathBuf::from)
+            }
             None => Some(vfs_status.mount_path.clone()),
         };
 
@@ -540,13 +572,56 @@ pub fn launch_tool_profile_vfs(
     })
 }
 
-fn rewrite_path_into_vfs(path: &Path, game_root: &Path, mount_path: &Path) -> SlimResult<PathBuf> {
-    let relative = path.strip_prefix(game_root).map_err(|_| {
-        crate::error::SlimError::Safety(format!(
-            "VFS-Werkzeuge müssen innerhalb des Spielverzeichnisses liegen: {}",
-            path.display()
-        ))
-    })?;
+fn resolve_tool_path_into_vfs(
+    conn: &rusqlite::Connection,
+    instance_id: &str,
+    profile_id: &str,
+    path: &Path,
+    game_root: &Path,
+    mount_path: &Path,
+) -> SlimResult<PathBuf> {
+    let relative = if path.is_relative() {
+        if path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        }) {
+            return Err(crate::error::SlimError::Safety(format!(
+                "Ungültiger relativer VFS-Werkzeugpfad: {}",
+                path.display()
+            )));
+        }
+        path.to_path_buf()
+    } else if let Ok(relative) = path.strip_prefix(game_root) {
+        relative.to_path_buf()
+    } else {
+        let original_rel_path: String = conn
+            .query_row(
+                "SELECT mf.original_rel_path
+                 FROM mod_files mf
+                 JOIN mods m ON m.id = mf.mod_id
+                 LEFT JOIN profile_mods pm ON pm.mod_id = m.id AND pm.profile_id = ?2
+                 WHERE m.instance_id = ?1
+                   AND COALESCE(pm.enabled, m.enabled_default) = 1
+                   AND mf.abs_source_path = ?3
+                 LIMIT 1",
+                rusqlite::params![instance_id, profile_id, path.to_string_lossy()],
+                |row| row.get(0),
+            )
+            .map_err(|_| {
+                crate::error::SlimError::Safety(format!(
+                    "Werkzeug liegt weder im Spielverzeichnis noch in einem aktiven Mod: {}",
+                    path.display()
+                ))
+            })?;
+        original_rel_path
+            .strip_prefix(crate::scanner::GAME_ROOT_PREFIX)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("Data").join(original_rel_path))
+    };
     Ok(mount_path.join(relative))
 }
 

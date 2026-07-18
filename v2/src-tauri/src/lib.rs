@@ -87,6 +87,7 @@ pub fn run() {
             commands::unmount_profile_vfs,
             commands::profile_vfs_status,
             commands::list_tool_profiles,
+            commands::list_tool_executable_candidates,
             commands::upsert_tool_profile,
             commands::launch_tool_profile,
             commands::launch_tool_profile_vfs,

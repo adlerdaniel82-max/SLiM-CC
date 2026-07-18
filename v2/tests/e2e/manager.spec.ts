@@ -24,7 +24,8 @@ test.beforeEach(async ({ page }) => {
           {id:"tool-fnis",tool_key:"fnis",display_name:"FNIS",executable_path:null,runner_type:"Wine",arguments:[],working_directory:null,wine_prefix:null,log_path:null,enabled:false},
           {id:"tool-pandora",tool_key:"pandora",display_name:"Pandora Behaviour Engine",executable_path:null,runner_type:"Wine",arguments:[],working_directory:null,wine_prefix:null,log_path:null,enabled:false},
           {id:"tool-bodyslide",tool_key:"bodyslide",display_name:"BodySlide & Outfit Studio",executable_path:null,runner_type:"Wine",arguments:[],working_directory:null,wine_prefix:null,log_path:null,enabled:false}
-        ]
+        ],
+        list_tool_executable_candidates:[{tool_key:"fnis",mod_id:"fnis-mod",mod_name:"FNIS Behavior SE 7.6",executable_name:"GenerateFNISforUsers.exe",virtual_path:"Data/tools/GenerateFNIS_for_Users/GenerateFNISforUsers.exe",source_path:"/workspace/mods/fnis/Data/tools/GenerateFNIS_for_Users/GenerateFNISforUsers.exe"}]
       };
       if(command === "list_mod_download_candidates") { downloads++; const length = (window as any).__extraDownload ? 41 : 40; return downloads > 1 ? Array.from({length}, (_, index) => ({name:index === 0 ? "New Mod" : `New Mod ${index}`,path:`/downloads/New Mod ${index}.7z`,entry_type:"archive",importable:true,installed:false,note:null})) : []; }
       if(command === "delete_instance") { instanceDeleted = true; return; }
@@ -161,6 +162,10 @@ test("game tools can be configured and launched in the active VFS", async ({ pag
   await expect(page.getByText("FNIS", { exact:true })).toBeVisible();
   await expect(page.getByText("Pandora Behaviour Engine", { exact:true })).toBeVisible();
   await expect(page.getByText("BodySlide & Outfit Studio", { exact:true })).toBeVisible();
+  const fnisForm = page.locator("form[data-tool-key=fnis]");
+  await fnisForm.locator("[data-role=tool-candidate]").selectOption("Data/tools/GenerateFNIS_for_Users/GenerateFNISforUsers.exe");
+  await fnisForm.getByRole("button", { name:"Übernehmen" }).click();
+  await expect(fnisForm.locator("[name=executable_path]")).toHaveValue("Data/tools/GenerateFNIS_for_Users/GenerateFNISforUsers.exe");
   await page.locator("form[data-tool-key=nemesis]").getByRole("button", { name:"Im VFS starten" }).click();
   await expect(page.locator("#external-process-overlay")).toContainText(/Nemesis (wird gestartet|ist aktiv)/);
   const commands = await page.evaluate(() => (window as any).__commands as string[]);

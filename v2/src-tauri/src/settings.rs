@@ -61,6 +61,9 @@ pub fn save_settings(
     conn: &mut Connection,
     request: UpdateAppSettingsRequest,
 ) -> SlimResult<AppSettings> {
+    if let Some(install_path) = request.install_path.as_deref() {
+        crate::instance::validate_wine_prefix(install_path, request.wine_prefix.as_deref())?;
+    }
     let tx = conn.transaction()?;
     set_path(&tx, SETTING_INSTALL_PATH, request.install_path.clone())?;
     set_path(&tx, SETTING_DATA_PATH, request.data_path.clone())?;

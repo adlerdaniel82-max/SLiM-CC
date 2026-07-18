@@ -4,7 +4,7 @@ import { closeMenus, installMenuBehavior } from "./core/menu";
 import { escapeHtml, pathName } from "./core/dom";
 import { Store } from "./core/store";
 import { normalizeSelection, selectionIsValid } from "./features/fomod/selection";
-import type { AppSettings, FomodPackagePreview, FomodSelectionEntry, GameInstance, ImportedModReport, ModConflictSummary, ModDependencyStatus, ModDependencySummary, ModDownloadCandidate, ModRecord, NexusRequirementStatus, Profile, ProfileModEntry, ProfilePluginEntry, ToolProfile, View } from "./types";
+import type { AppSettings, FomodPackagePreview, FomodSelectionEntry, GameInstance, ImportedModReport, ModConflictSummary, ModDependencyStatus, ModDependencySummary, ModDownloadCandidate, ModRecord, NexusRequirementStatus, Profile, ProfileModEntry, ProfilePluginEntry, ToolExecutableCandidate, ToolProfile, View } from "./types";
 import { aboutDialog, collectionDialog, collectionResultDialog, deleteInstanceDialog, deleteModDialog, deleteProfileDialog, dependencyDetailsDialog, fomodDialog, importDialog, instancesDialog, profilesDialog, settingsDialog, toolsDialog } from "./ui/dialogs";
 import { renderShell } from "./ui/shell";
 
@@ -91,6 +91,7 @@ export class SlimApp {
         case "pick-data-folder": await this.pick("pick_directory", "data_path", "Data-Verzeichnis auswählen"); break;
         case "pick-game-starter": await this.pick("pick_file", "game_starter_path", "Spielstarter auswählen"); break;
         case "pick-tool-executable": await this.pickToolExecutable(target); break;
+        case "use-tool-candidate": this.useToolCandidate(target); break;
         case "close-dialog": this.closeDialog(); break;
         case "cancel-fomod": await this.cancelFomod(); break;
         case "delete-mod": { const mod = this.store.state.mods.find((item) => item.id === target.dataset.modId); if (mod) this.openDialog(deleteModDialog(mod.id, mod.name)); break; }
@@ -387,8 +388,19 @@ export class SlimApp {
   }
 
   private async openToolsDialog(): Promise<void> {
-    const profiles = await this.api.call<ToolProfile[]>("list_tool_profiles");
-    this.openDialog(toolsDialog(profiles));
+    const { activeInstanceId: instanceId, activeProfileId: profileId } = this.store.state;
+    const [profiles, candidates] = await Promise.all([
+      this.api.call<ToolProfile[]>("list_tool_profiles"),
+      instanceId && profileId ? this.api.call<ToolExecutableCandidate[]>("list_tool_executable_candidates", { instanceId, profileId }) : Promise.resolve([])
+    ]);
+    this.openDialog(toolsDialog(profiles, candidates));
+  }
+
+  private useToolCandidate(target: HTMLElement): void {
+    const form = target.closest<HTMLFormElement>("form[data-form=tool-profile]");
+    const candidate = form?.querySelector<HTMLSelectElement>("[data-role=tool-candidate]")?.value;
+    const input = form?.querySelector<HTMLInputElement>("[name=executable_path]");
+    if (candidate && input) input.value = candidate;
   }
 
   private async pickToolExecutable(target: HTMLElement): Promise<void> {

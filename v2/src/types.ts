@@ -48,6 +48,10 @@ export interface ToolProfile {
   runner_type: string; arguments: string[]; working_directory: string | null;
   wine_prefix: string | null; log_path: string | null; enabled: boolean;
 }
+export interface ToolExecutableCandidate {
+  tool_key: string; mod_id: string; mod_name: string; executable_name: string;
+  virtual_path: string; source_path: string;
+}
 export interface FomodFileSpec { source: string; destination: string | null; is_folder: boolean; priority?: number }
 export interface FomodDependencyGroup { operator: string; dependencies: unknown[] }
 export interface FomodOptionPreview {

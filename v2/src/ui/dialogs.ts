@@ -2,7 +2,7 @@ import { escapeHtml, pathName } from "../core/dom";
 import slimccBanner from "../../assets/slimcc-banner.png";
 import { initialSelections } from "../features/fomod/selection";
 import type { AppState } from "../core/store";
-import type { FomodPackagePreview, FomodSelectionEntry, GameInstance, ModDependencyStatus, NexusRequirementStatus, Profile, ToolProfile } from "../types";
+import type { FomodPackagePreview, FomodSelectionEntry, GameInstance, ModDependencyStatus, NexusRequirementStatus, Profile, ToolExecutableCandidate, ToolProfile } from "../types";
 
 export function instancesDialog(instances: GameInstance[]): string {
   const rows = instances.map((instance) => `<tr><td class="primary">${escapeHtml(instance.name)}</td><td>${escapeHtml(instance.runner_type)}</td><td title="${escapeHtml(instance.install_path)}">${escapeHtml(instance.install_path)}</td><td><button class="compact-button danger-outline" data-action="request-delete-instance" data-instance-id="${escapeHtml(instance.id)}">Löschen …</button></td></tr>`).join("");
@@ -22,17 +22,22 @@ export function settingsDialog(state: AppState): string {
   return dialog("Einstellungen", `<form data-form="settings"><label>Downloadordner<div class="path-picker"><input name="mod_download_path" value="${escapeHtml(s?.mod_download_path ?? "")}"><button type="button" data-action="pick-download-folder">Ordner …</button></div></label><label>Spielverzeichnis<input name="install_path" value="${escapeHtml(s?.install_path ?? "")}"></label><label>Data-Verzeichnis<input name="data_path" value="${escapeHtml(s?.data_path ?? "")}"></label><label>Wine Prefix<input name="wine_prefix" value="${escapeHtml(s?.wine_prefix ?? "")}"></label><details><summary>Werkzeug-Pfade</summary><p class="hint">LOOT, xEdit, FNIS, Nemesis, Pandora sowie BodySlide & Outfit Studio besitzen eigene Programm- und Runner-Einstellungen.</p><button type="button" data-action="manage-tools">Werkzeug-Pfade konfigurieren …</button></details><details><summary>Nexus API</summary><label>API-Schlüssel<input type="password" name="nexus_api_key" autocomplete="off" placeholder="${s?.nexus_api_key_masked ?? "Nicht eingerichtet"}"></label></details><footer><button type="button" data-action="close-dialog">Abbrechen</button><button class="primary-button" type="submit">Speichern</button></footer></form>`);
 }
 
-export function toolsDialog(profiles: ToolProfile[]): string {
+export function toolsDialog(profiles: ToolProfile[], candidates: ToolExecutableCandidate[] = []): string {
   const supported = new Set(["xedit", "nemesis", "fnis", "pandora", "bodyslide"]);
-  const rows = profiles.filter((profile) => supported.has(profile.tool_key)).map((profile) => `
+  const rows = profiles.filter((profile) => supported.has(profile.tool_key)).map((profile) => {
+    const matches = candidates.filter((candidate) => candidate.tool_key === profile.tool_key);
+    const detected = matches.length ? `<label>Im aktiven Profil erkannt<div class="tool-candidate-picker"><select data-role="tool-candidate"><option value="">Kandidat auswählen …</option>${matches.map((candidate) => `<option value="${escapeHtml(candidate.virtual_path)}">${escapeHtml(candidate.executable_name)} · ${escapeHtml(candidate.mod_name)}</option>`).join("")}</select><button type="button" data-action="use-tool-candidate">Übernehmen</button></div></label>` : `<p class="hint">Im aktiven Profil wurde keine passende EXE erkannt.</p>`;
+    return `
     <form class="tool-profile" data-form="tool-profile" data-tool-key="${escapeHtml(profile.tool_key)}">
       <header><strong>${escapeHtml(profile.display_name)}</strong><label class="inline-check"><input type="checkbox" name="enabled" ${profile.enabled ? "checked" : ""}> Aktiv</label></header>
-      <label>Programmdatei<div class="path-picker"><input name="executable_path" value="${escapeHtml(profile.executable_path ?? "")}" placeholder="Datei innerhalb des Spielverzeichnisses"><button type="button" data-action="pick-tool-executable">Datei …</button></div></label>
+      ${detected}
+      <label>Programmdatei oder VFS-Pfad<div class="path-picker"><input name="executable_path" value="${escapeHtml(profile.executable_path ?? "")}" placeholder="z. B. Data/tools/…/FNIS.exe"><button type="button" data-action="pick-tool-executable">Datei …</button></div></label>
       <div class="form-columns"><label>Runner<select name="runner_type"><option value="Wine" ${profile.runner_type.toLowerCase() === "wine" ? "selected" : ""}>Wine</option><option value="Native" ${profile.runner_type.toLowerCase() === "native" ? "selected" : ""}>Nativ</option></select></label><label>Arbeitsverzeichnis<input name="working_directory" value="${escapeHtml(profile.working_directory ?? "")}" placeholder="Standard: Programmordner/Spiel"></label></div>
       <label>Argumente<input name="arguments" value="${escapeHtml(profile.arguments.join(" "))}" placeholder="Optional, durch Leerzeichen getrennt"></label>
       <footer><button type="button" data-action="launch-vfs-tool" data-tool-key="${escapeHtml(profile.tool_key)}" ${!profile.enabled || !profile.executable_path ? "disabled" : ""}>Im VFS starten</button><button class="primary-button" type="submit">Speichern</button></footer>
-    </form>`).join("");
-  return dialog("Werkzeug-Pfade", `<p class="hint">xEdit, FNIS, Nemesis, Pandora sowie BodySlide & Outfit Studio werden im virtuellen Profil gestartet. Programmdateien müssen innerhalb des Spielverzeichnisses liegen; erzeugte Dateien landen im Profil-Overwrite.</p><div class="tool-profiles">${rows}</div><footer><button class="primary-button" data-action="close-dialog">Schließen</button></footer>`, "wide");
+    </form>`;
+  }).join("");
+  return dialog("Werkzeug-Pfade", `<p class="hint">SLiM-CC erkennt passende EXE-Dateien in den aktiven Mods. „Übernehmen“ speichert einen stabilen Pfad innerhalb des VFS; UUID-Verzeichnisse müssen nicht manuell gesucht werden. Erzeugte Dateien landen im Profil-Overwrite.</p><div class="tool-profiles">${rows}</div><footer><button class="primary-button" data-action="close-dialog">Schließen</button></footer>`, "wide");
 }
 
 export function collectionDialog(): string {

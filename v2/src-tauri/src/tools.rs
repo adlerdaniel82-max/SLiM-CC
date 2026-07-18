@@ -51,6 +51,16 @@ pub struct ToolProfile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolExecutableCandidate {
+    pub tool_key: String,
+    pub mod_id: String,
+    pub mod_name: String,
+    pub executable_name: String,
+    pub virtual_path: PathBuf,
+    pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateToolProfileRequest {
     pub tool_key: String,
     pub display_name: String,
@@ -97,6 +107,75 @@ pub fn list_tool_profiles(conn: &Connection) -> SlimResult<Vec<ToolProfile>> {
     Ok(profiles)
 }
 
+pub fn list_tool_executable_candidates(
+    conn: &Connection,
+    instance_id: &str,
+    profile_id: &str,
+) -> SlimResult<Vec<ToolExecutableCandidate>> {
+    let mut stmt = conn.prepare(
+        "SELECT m.id, m.name, mf.original_rel_path, mf.abs_source_path
+         FROM mod_files mf
+         JOIN mods m ON m.id = mf.mod_id
+         LEFT JOIN profile_mods pm ON pm.mod_id = m.id AND pm.profile_id = ?2
+         WHERE m.instance_id = ?1
+           AND COALESCE(pm.enabled, m.enabled_default) = 1
+           AND LOWER(mf.original_rel_path) LIKE '%.exe'
+         ORDER BY LOWER(m.name), LOWER(mf.original_rel_path)",
+    )?;
+    let rows = stmt.query_map(params![instance_id, profile_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut candidates = Vec::new();
+    for row in rows {
+        let (mod_id, mod_name, original_rel_path, source_path) = row?;
+        let Some(tool_key) = infer_tool_key(&original_rel_path) else {
+            continue;
+        };
+        let relative = original_rel_path
+            .strip_prefix(crate::scanner::GAME_ROOT_PREFIX)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("Data").join(&original_rel_path));
+        let executable_name = PathBuf::from(&original_rel_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&original_rel_path)
+            .to_string();
+        candidates.push(ToolExecutableCandidate {
+            tool_key: tool_key.into(),
+            mod_id,
+            mod_name,
+            executable_name,
+            virtual_path: relative,
+            source_path: source_path.into(),
+        });
+    }
+    Ok(candidates)
+}
+
+fn infer_tool_key(path: &str) -> Option<&'static str> {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with("generatefnisforusers.exe") {
+        Some("fnis")
+    } else if lower.contains("nemesis") && lower.ends_with(".exe") {
+        Some("nemesis")
+    } else if lower.contains("pandora") && lower.ends_with(".exe") {
+        Some("pandora")
+    } else if (lower.contains("bodyslide") || lower.contains("outfitstudio"))
+        && lower.ends_with(".exe")
+    {
+        Some("bodyslide")
+    } else if lower.ends_with("sseedit.exe") || lower.ends_with("xedit.exe") {
+        Some("xedit")
+    } else {
+        None
+    }
+}
+
 pub fn validate_tool_profiles(conn: &Connection) -> SlimResult<Vec<ToolProfileValidation>> {
     let settings = crate::settings::load_settings(conn)?;
     let profiles = list_tool_profiles(conn)?;
@@ -114,7 +193,7 @@ fn validate_tool_profile(
     let executable_exists = profile
         .executable_path
         .as_ref()
-        .map(|path| path.is_file())
+        .map(|path| path.is_relative() || path.is_file())
         .unwrap_or(false);
     let effective_working_directory = profile
         .working_directory
@@ -390,12 +469,20 @@ pub fn build_tool_launch_request_with_arguments(
         }
     });
 
+    let runner_type = runner_type_from_label(&profile.runner_type)?;
+    let wine_prefix = profile.wine_prefix.clone().or(settings.wine_prefix.clone());
+    if matches!(runner_type, RunnerType::Wine | RunnerType::Proton) {
+        if let Some(install_path) = settings.install_path.as_deref() {
+            crate::instance::validate_wine_prefix(install_path, wine_prefix.as_deref())?;
+        }
+    }
+
     Ok(ToolLaunchRequest {
-        runner_type: runner_type_from_label(&profile.runner_type)?,
+        runner_type,
         executable_path,
         arguments,
         working_directory,
-        wine_prefix: profile.wine_prefix.clone().or(settings.wine_prefix.clone()),
+        wine_prefix,
     })
 }
 
@@ -625,6 +712,49 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
     use std::path::PathBuf;
+
+    #[test]
+    fn tool_detection_recognises_managed_mod_executables() {
+        assert_eq!(
+            infer_tool_key("tools/GenerateFNIS_for_Users/GenerateFNISforUsers.exe"),
+            Some("fnis")
+        );
+        assert_eq!(
+            infer_tool_key("CalienteTools/BodySlide/BodySlide x64.exe"),
+            Some("bodyslide")
+        );
+        assert_eq!(infer_tool_key("tools/SSEEdit.exe"), Some("xedit"));
+        assert_eq!(infer_tool_key("tools/hkxcmd.exe"), None);
+    }
+
+    #[test]
+    fn candidates_expose_stable_vfs_paths_instead_of_workspace_uuids() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(include_str!("../migrations/001_initial.sql"))
+            .expect("create schema");
+        conn.execute_batch(
+            "INSERT INTO instances (id, name, game_type, install_path, data_path, runner_type, created_at, updated_at)
+             VALUES ('instance-a', 'Skyrim', 'skyrimse', '/game', '/game/Data', 'wine', 'now', 'now');
+             INSERT INTO profiles (id, instance_id, name, created_at, updated_at)
+             VALUES ('profile-a', 'instance-a', 'Default', 'now', 'now');
+             INSERT INTO mods (id, instance_id, name, source_path, installed_path, created_at, updated_at)
+             VALUES ('mod-fnis', 'instance-a', 'FNIS Behavior SE', '/downloads/fnis.7z', '/workspace/mods/uuid', 'now', 'now');
+             INSERT INTO profile_mods (profile_id, mod_id, enabled, priority)
+             VALUES ('profile-a', 'mod-fnis', 1, 10);
+             INSERT INTO mod_files (id, mod_id, original_rel_path, normalized_rel_path, abs_source_path, created_at)
+             VALUES ('file-fnis', 'mod-fnis', 'tools/GenerateFNIS_for_Users/GenerateFNISforUsers.exe', 'tools/generatefnis_for_users/generatefnisforusers.exe', '/workspace/mods/uuid/Data/tools/GenerateFNISforUsers.exe', 'now')",
+        )
+        .expect("insert managed FNIS");
+
+        let candidates = list_tool_executable_candidates(&conn, "instance-a", "profile-a")
+            .expect("list candidates");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].tool_key, "fnis");
+        assert_eq!(
+            candidates[0].virtual_path,
+            PathBuf::from("Data/tools/GenerateFNIS_for_Users/GenerateFNISforUsers.exe")
+        );
+    }
 
     #[test]
     fn upsert_tool_profile_persists_runner_arguments_and_paths() {

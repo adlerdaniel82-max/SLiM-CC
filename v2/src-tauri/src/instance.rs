@@ -5,11 +5,38 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
+pub fn validate_wine_prefix(
+    install_path: &std::path::Path,
+    wine_prefix: Option<&std::path::Path>,
+) -> SlimResult<()> {
+    let Some(wine_prefix) = wine_prefix else {
+        return Ok(());
+    };
+    let install = install_path
+        .canonicalize()
+        .unwrap_or_else(|_| install_path.to_path_buf());
+    let prefix = wine_prefix
+        .canonicalize()
+        .unwrap_or_else(|_| wine_prefix.to_path_buf());
+    if wine_prefix == install_path
+        || wine_prefix.starts_with(install_path)
+        || prefix == install
+        || prefix.starts_with(&install)
+    {
+        return Err(SlimError::InvalidPath(format!(
+            "Das Wine-Prefix darf nicht das Spielverzeichnis oder ein Unterordner davon sein: {}",
+            wine_prefix.display()
+        )));
+    }
+    Ok(())
+}
+
 pub fn create_instance(
     conn: &Connection,
     workspace_root: &std::path::Path,
     request: CreateInstanceRequest,
 ) -> SlimResult<GameInstance> {
+    validate_wine_prefix(&request.install_path, request.wine_prefix.as_deref())?;
     let name = request.name.clone();
     let install_path = request.install_path.clone();
     let data_path = request.data_path.clone();
@@ -94,6 +121,7 @@ pub fn update_instance(
     conn: &Connection,
     request: UpdateInstanceRequest,
 ) -> SlimResult<GameInstance> {
+    validate_wine_prefix(&request.install_path, request.wine_prefix.as_deref())?;
     let name = request.name.clone();
     let install_path = request.install_path.clone();
     let data_path = request.data_path.clone();
@@ -145,6 +173,34 @@ pub fn update_instance(
         runner_type,
         wine_prefix,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("slimcc-prefix-{label}-{}", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn wine_prefix_rejects_game_directory_and_its_children() {
+        let game = temp_path("game");
+        fs::create_dir_all(&game).unwrap();
+        assert!(validate_wine_prefix(&game, Some(&game)).is_err());
+        assert!(validate_wine_prefix(&game, Some(&game.join("accidental-prefix"))).is_err());
+        let _ = fs::remove_dir_all(game);
+    }
+
+    #[test]
+    fn wine_prefix_accepts_parent_of_game_directory() {
+        let prefix = temp_path("valid");
+        let game = prefix.join("drive_c/GOG Games/Skyrim Anniversary Edition");
+        fs::create_dir_all(&game).unwrap();
+        assert!(validate_wine_prefix(&game, Some(&prefix)).is_ok());
+        let _ = fs::remove_dir_all(prefix);
+    }
 }
 
 pub fn delete_instance(
