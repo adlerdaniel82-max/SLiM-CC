@@ -935,6 +935,11 @@ pub fn launch_loot(
     state: State<AppState>,
     request: LaunchLootRequest,
 ) -> SlimResult<LootLaunchResult> {
+    let vfs_status = prepare_profile_vfs(
+        state.clone(),
+        request.instance_id.clone(),
+        request.profile_id.clone(),
+    )?;
     let loot_executable_path = state
         .with_connection(resolve_loot_executable_path)?
         .ok_or_else(|| {
@@ -948,6 +953,7 @@ pub fn launch_loot(
             &loot_executable_path,
             &request.instance_id,
             &request.profile_id,
+            &vfs_status.mount_path,
         )
     })
 }

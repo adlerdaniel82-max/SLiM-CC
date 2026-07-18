@@ -626,6 +626,7 @@ pub fn launch_loot(
     loot_executable_path: &Path,
     instance_id: &str,
     profile_id: &str,
+    game_path: &Path,
 ) -> SlimResult<LootLaunchResult> {
     let instance = crate::instance::get_instance_by_id(conn, instance_id)?;
     let game_identifier = loot_game_identifier(&instance.game_type).ok_or_else(|| {
@@ -639,7 +640,7 @@ pub fn launch_loot(
         workspace_root,
         instance_id,
         game_identifier,
-        &instance.install_path,
+        game_path,
         loot_uses_windows_paths(conn),
     )?;
     seed_loot_local_files(
@@ -653,7 +654,7 @@ pub fn launch_loot(
         conn,
         loot_executable_path,
         &launch_context.args,
-        &instance.install_path,
+        game_path,
         instance.wine_prefix.as_deref(),
     )?;
     if !tool_request.executable_path.exists() {
@@ -2501,7 +2502,7 @@ mod tests {
     #[test]
     fn loot_wine_context_uses_windows_paths_in_arguments_and_settings() {
         let workspace_root = temp_workspace("loot-wine-paths");
-        let install_path = PathBuf::from("/games/Skyrim Anniversary Edition");
+        let install_path = PathBuf::from("/state/instances/instance-a/profiles/profile-a/vfs/game");
         let context = prepare_loot_launch_context_for_runner(
             &workspace_root,
             "instance-a",
@@ -2511,9 +2512,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(context
-            .args
-            .contains(&"--game-path=Z:\\games\\Skyrim Anniversary Edition".to_string()));
+        assert!(context.args.contains(
+            &"--game-path=Z:\\state\\instances\\instance-a\\profiles\\profile-a\\vfs\\game"
+                .to_string()
+        ));
         assert!(context.args.iter().any(|argument| {
             argument.starts_with("--loot-data-path=Z:\\") && !argument.contains('/')
         }));
@@ -2521,7 +2523,9 @@ mod tests {
             paths::loot_data_path(&workspace_root, "instance-a").join("settings.toml"),
         )
         .unwrap();
-        assert!(settings.contains("path = \"Z:\\\\games\\\\Skyrim Anniversary Edition\""));
+        assert!(settings.contains(
+            "path = \"Z:\\\\state\\\\instances\\\\instance-a\\\\profiles\\\\profile-a\\\\vfs\\\\game\""
+        ));
 
         let _ = fs::remove_dir_all(workspace_root);
     }
