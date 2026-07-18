@@ -43,6 +43,11 @@ export interface AppSettings {
   loot_executable_path: string | null; mod_download_path: string | null; language: string | null;
   nexus_api_key_configured: boolean; nexus_api_key_masked: string | null;
 }
+export interface ToolProfile {
+  id: string; tool_key: string; display_name: string; executable_path: string | null;
+  runner_type: string; arguments: string[]; working_directory: string | null;
+  wine_prefix: string | null; log_path: string | null; enabled: boolean;
+}
 export interface FomodFileSpec { source: string; destination: string | null; is_folder: boolean; priority?: number }
 export interface FomodDependencyGroup { operator: string; dependencies: unknown[] }
 export interface FomodOptionPreview {

@@ -329,6 +329,18 @@ pub fn launch_tool(request: tools::ToolLaunchRequest) -> SlimResult<tools::Comma
 }
 
 #[tauri::command]
+pub fn process_is_running(process_id: u32) -> bool {
+    let stat = match std::fs::read_to_string(format!("/proc/{process_id}/stat")) {
+        Ok(stat) => stat,
+        Err(_) => return false,
+    };
+    stat.rsplit_once(") ")
+        .and_then(|(_, fields)| fields.chars().next())
+        .map(|state| state != 'Z' && state != 'X')
+        .unwrap_or(false)
+}
+
+#[tauri::command]
 pub fn launch_game(
     state: State<AppState>,
     instance_id: String,
@@ -468,6 +480,74 @@ pub fn launch_tool_profile(
     request: tools::LaunchToolProfileRequest,
 ) -> SlimResult<tools::CommandPreview> {
     state.with_connection_mut(|conn| tools::launch_tool_profile(conn, request))
+}
+
+#[tauri::command]
+pub fn launch_tool_profile_vfs(
+    state: State<AppState>,
+    tool_key: String,
+    instance_id: String,
+    profile_id: String,
+) -> SlimResult<tools::CommandPreview> {
+    let vfs_status = prepare_profile_vfs(state.clone(), instance_id.clone(), profile_id)?;
+    state.with_connection(|conn| {
+        let instance = instance::get_instance_by_id(conn, &instance_id)?;
+        let profile = tools::get_tool_profile(conn, &tool_key)?;
+        if !profile.enabled {
+            return Err(crate::error::SlimError::Disabled(format!(
+                "Werkzeug ist deaktiviert: {}",
+                profile.display_name
+            )));
+        }
+        let real_executable = profile.executable_path.clone().ok_or_else(|| {
+            crate::error::SlimError::InvalidPath(format!(
+                "Programmdatei ist nicht konfiguriert: {}",
+                profile.display_name
+            ))
+        })?;
+        let executable_path = rewrite_path_into_vfs(
+            &real_executable,
+            &instance.install_path,
+            &vfs_status.mount_path,
+        )?;
+        if !executable_path.is_file() {
+            return Err(crate::error::SlimError::NotFound(format!(
+                "Programmdatei ist im VFS nicht vorhanden: {}",
+                executable_path.display()
+            )));
+        }
+
+        let mut settings = settings::load_settings(conn)?;
+        settings.install_path = Some(instance.install_path.clone());
+        if settings.wine_prefix.is_none() {
+            settings.wine_prefix = instance.wine_prefix.clone();
+        }
+        let mut request = tools::build_tool_launch_request(&profile, real_executable, &settings)?;
+        request.executable_path = executable_path;
+        request.working_directory = match request.working_directory.as_deref() {
+            Some(path) => Some(rewrite_path_into_vfs(
+                path,
+                &instance.install_path,
+                &vfs_status.mount_path,
+            )?),
+            None => Some(vfs_status.mount_path.clone()),
+        };
+
+        let mut preview = tools::build_command_preview(&request)?;
+        let child = tools::spawn_tool(&request)?;
+        preview.process_id = Some(child.id());
+        Ok(preview)
+    })
+}
+
+fn rewrite_path_into_vfs(path: &Path, game_root: &Path, mount_path: &Path) -> SlimResult<PathBuf> {
+    let relative = path.strip_prefix(game_root).map_err(|_| {
+        crate::error::SlimError::Safety(format!(
+            "VFS-Werkzeuge müssen innerhalb des Spielverzeichnisses liegen: {}",
+            path.display()
+        ))
+    })?;
+    Ok(mount_path.join(relative))
 }
 
 #[tauri::command]

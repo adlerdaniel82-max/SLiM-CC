@@ -4,8 +4,8 @@ import { closeMenus, installMenuBehavior } from "./core/menu";
 import { escapeHtml, pathName } from "./core/dom";
 import { Store } from "./core/store";
 import { normalizeSelection, selectionIsValid } from "./features/fomod/selection";
-import type { AppSettings, FomodPackagePreview, FomodSelectionEntry, GameInstance, ImportedModReport, ModConflictSummary, ModDependencyStatus, ModDependencySummary, ModDownloadCandidate, ModRecord, NexusRequirementStatus, Profile, ProfileModEntry, ProfilePluginEntry, View } from "./types";
-import { aboutDialog, collectionDialog, collectionResultDialog, deleteInstanceDialog, deleteModDialog, deleteProfileDialog, dependencyDetailsDialog, fomodDialog, importDialog, infoDialog, instancesDialog, profilesDialog, settingsDialog } from "./ui/dialogs";
+import type { AppSettings, FomodPackagePreview, FomodSelectionEntry, GameInstance, ImportedModReport, ModConflictSummary, ModDependencyStatus, ModDependencySummary, ModDownloadCandidate, ModRecord, NexusRequirementStatus, Profile, ProfileModEntry, ProfilePluginEntry, ToolProfile, View } from "./types";
+import { aboutDialog, collectionDialog, collectionResultDialog, deleteInstanceDialog, deleteModDialog, deleteProfileDialog, dependencyDetailsDialog, fomodDialog, importDialog, instancesDialog, profilesDialog, settingsDialog, toolsDialog } from "./ui/dialogs";
 import { renderShell } from "./ui/shell";
 
 export class SlimApp {
@@ -15,6 +15,7 @@ export class SlimApp {
   private logVisible = true;
   private pendingImport: { sourcePath: string; name: string; targetModId?: string } | null = null;
   private fomodSelections: FomodSelectionEntry[] = [];
+  private readonly externalActivities = new Map<symbol, string>();
 
   private readonly useDeepLinks: boolean;
 
@@ -89,6 +90,7 @@ export class SlimApp {
         case "pick-install-folder": await this.pick("pick_directory", "install_path", "Spielverzeichnis auswählen"); break;
         case "pick-data-folder": await this.pick("pick_directory", "data_path", "Data-Verzeichnis auswählen"); break;
         case "pick-game-starter": await this.pick("pick_file", "game_starter_path", "Spielstarter auswählen"); break;
+        case "pick-tool-executable": await this.pickToolExecutable(target); break;
         case "close-dialog": this.closeDialog(); break;
         case "cancel-fomod": await this.cancelFomod(); break;
         case "delete-mod": { const mod = this.store.state.mods.find((item) => item.id === target.dataset.modId); if (mod) this.openDialog(deleteModDialog(mod.id, mod.name)); break; }
@@ -105,12 +107,13 @@ export class SlimApp {
         case "deploy": await this.deploy(); break;
         case "launch": await this.launch(); break;
         case "run-loot": await this.runLoot(); break;
+        case "launch-vfs-tool": await this.launchVfsTool(target.dataset.toolKey ?? ""); break;
         case "reconfigure-fomod": await this.reconfigureFomod(); break;
         case "diagnose": await this.diagnose(); break;
         case "open-nexus": await this.api.call("open_external_url", { url: "https://www.nexusmods.com/skyrimspecialedition" }); break;
         case "manage-instances": this.openDialog(instancesDialog(this.store.state.instances)); break;
         case "manage-profiles": { const instance = this.store.state.instances.find((item) => item.id === this.store.state.activeInstanceId); if (!instance) throw new Error("Bitte zuerst eine Instanz anlegen."); this.openDialog(profilesDialog(instance, this.store.state.profiles)); break; }
-        case "manage-tools": this.openDialog(infoDialog("Anwendungen", "LOOT und weitere Werkzeuge werden unter Einstellungen konfiguriert.")); break;
+        case "manage-tools": await this.openToolsDialog(); break;
         case "about": this.openDialog(aboutDialog()); break;
         case "quit": window.close(); break;
       }
@@ -158,6 +161,7 @@ export class SlimApp {
       if (form.dataset.form === "collection") await this.analyzeCollection(form);
       if (form.dataset.form === "create-instance") await this.createInstance(form);
       if (form.dataset.form === "create-profile") await this.createProfile(form);
+      if (form.dataset.form === "tool-profile") await this.saveToolProfile(form);
     } catch (error) { this.fail(error); }
   }
 
@@ -382,6 +386,57 @@ export class SlimApp {
     this.openDialog(collectionResultDialog(result)); this.store.log("success", `${result.items.length} Collection-Einträge geladen.`);
   }
 
+  private async openToolsDialog(): Promise<void> {
+    const profiles = await this.api.call<ToolProfile[]>("list_tool_profiles");
+    this.openDialog(toolsDialog(profiles));
+  }
+
+  private async pickToolExecutable(target: HTMLElement): Promise<void> {
+    const form = target.closest<HTMLFormElement>("form[data-form=tool-profile]");
+    const input = form?.querySelector<HTMLInputElement>("[name=executable_path]");
+    const value = await this.api.call<string | null>("pick_file", {
+      title: "Werkzeug auswählen",
+      defaultPath: input?.value || null
+    });
+    if (input && value) input.value = value;
+  }
+
+  private async saveToolProfile(form: HTMLFormElement): Promise<void> {
+    const current = (await this.api.call<ToolProfile[]>("list_tool_profiles")).find((item) => item.tool_key === form.dataset.toolKey);
+    if (!current) throw new Error("Werkzeugprofil wurde nicht gefunden.");
+    const data = new FormData(form); const text = (name: string) => String(data.get(name) ?? "").trim();
+    await this.api.call<ToolProfile>("upsert_tool_profile", { request: {
+      tool_key: current.tool_key,
+      display_name: current.display_name,
+      executable_path: text("executable_path") || null,
+      runner_type: text("runner_type") || "Wine",
+      arguments: text("arguments").split(/\s+/).filter(Boolean),
+      working_directory: text("working_directory") || null,
+      wine_prefix: current.wine_prefix,
+      log_path: current.log_path,
+      enabled: data.get("enabled") === "on"
+    } });
+    await this.openToolsDialog();
+    this.store.log("success", `${current.display_name} gespeichert.`);
+  }
+
+  private async launchVfsTool(toolKey: string): Promise<void> {
+    const { activeInstanceId: instanceId, activeProfileId: profileId } = this.store.state;
+    if (!instanceId || !profileId) throw new Error("Bitte zuerst Instanz und Profil auswählen.");
+    const profiles = await this.api.call<ToolProfile[]>("list_tool_profiles");
+    const profile = profiles.find((item) => item.tool_key === toolKey);
+    const label = profile?.display_name ?? toolKey;
+    const activity = this.beginExternalActivity(`${label} wird gestartet …`);
+    try {
+      const result = await this.api.call<{process_id: number | null}>("launch_tool_profile_vfs", { toolKey, instanceId, profileId });
+      this.updateExternalActivity(activity, `${label} ist aktiv`);
+      this.store.log("success", `${label} wurde im VFS gestartet.`);
+      await this.monitorExternalProcess(result.process_id);
+    } finally {
+      this.endExternalActivity(activity);
+    }
+  }
+
   private async pick(command: "pick_file" | "pick_directory", field: string, title: string): Promise<void> {
     const input = this.root.querySelector<HTMLInputElement>(`[name="${field}"]`); const value = await this.api.call<string | null>(command, { title, defaultPath: input?.value || null });
     if (input && value) { input.value = value; input.dispatchEvent(new Event("change", { bubbles: true })); }
@@ -397,8 +452,24 @@ export class SlimApp {
     this.store.log(plan.warnings.length ? "warning" : "success", `Staging erstellt: ${plan.operations.length} Operationen, ${plan.warnings.length} Warnungen.`);
   }
 
-  private async launch(): Promise<void> { const { activeInstanceId: instanceId, activeProfileId: profileId } = this.store.state; if (!instanceId || !profileId) return; await this.api.call("launch_game", { instanceId, profileId }); this.store.log("success", "Virtuelles Profil wurde eingehängt und das Spiel gestartet."); }
-  private async runLoot(): Promise<void> { const { activeInstanceId: instanceId, activeProfileId: profileId } = this.store.state; if (!instanceId || !profileId) return; await this.api.call("launch_loot", { request: { instance_id: instanceId, profile_id: profileId } }); this.store.log("success", "LOOT wurde ausgeführt."); }
+  private async launch(): Promise<void> {
+    const { activeInstanceId: instanceId, activeProfileId: profileId } = this.store.state; if (!instanceId || !profileId) return;
+    const activity = this.beginExternalActivity("Skyrim wird gestartet …");
+    try {
+      const result = await this.api.call<{process_id: number | null}>("launch_game", { instanceId, profileId });
+      this.updateExternalActivity(activity, "Skyrim ist aktiv");
+      this.store.log("success", "Virtuelles Profil wurde eingehängt und das Spiel gestartet.");
+      await this.monitorExternalProcess(result.process_id);
+    } finally { this.endExternalActivity(activity); }
+  }
+  private async runLoot(): Promise<void> {
+    const { activeInstanceId: instanceId, activeProfileId: profileId } = this.store.state; if (!instanceId || !profileId) return;
+    const activity = this.beginExternalActivity("LOOT sortiert die Plugins …");
+    try {
+      await this.api.call("launch_loot", { request: { instance_id: instanceId, profile_id: profileId } });
+      this.store.log("success", "LOOT wurde ausgeführt.");
+    } finally { this.endExternalActivity(activity); }
+  }
   private async diagnose(): Promise<void> { const { activeInstanceId: instanceId, activeProfileId: profileId } = this.store.state; if (!instanceId || !profileId) return; await this.api.call("build_diagnosis_report", { instanceId, profileId }); this.store.log("success", "Diagnose abgeschlossen."); }
 
   private async initializeDeepLinks(): Promise<void> {
@@ -406,8 +477,32 @@ export class SlimApp {
     await process(await getCurrent()); await onOpenUrl((urls) => void process(urls));
   }
 
-  private openDialog(html: string): void { const host = this.root.querySelector<HTMLElement>("#modal-host"); if (host) host.innerHTML = html; }
-  private closeDialog(): void { const host = this.root.querySelector<HTMLElement>("#modal-host"); if (host) host.innerHTML = ""; }
+  private beginExternalActivity(label: string): symbol {
+    const token = Symbol(label); this.externalActivities.set(token, label); this.renderExternalActivity(); return token;
+  }
+  private updateExternalActivity(token: symbol, label: string): void {
+    if (this.externalActivities.has(token)) { this.externalActivities.set(token, label); this.renderExternalActivity(); }
+  }
+  private endExternalActivity(token: symbol): void { this.externalActivities.delete(token); this.renderExternalActivity(); }
+  private renderExternalActivity(): void {
+    let overlay = this.root.querySelector<HTMLElement>("#external-process-overlay");
+    if (!this.externalActivities.size) { overlay?.remove(); return; }
+    if (!overlay) {
+      overlay = document.createElement("div"); overlay.id = "external-process-overlay"; overlay.className = "external-process-overlay";
+      this.root.querySelector<HTMLElement>(".app-shell")?.append(overlay);
+    }
+    const label = [...this.externalActivities.values()].at(-1) ?? "Externes Programm ist aktiv";
+    overlay.innerHTML = `<div class="external-process-status" role="status"><span class="progress-spinner"></span><strong>${escapeHtml(label)}</strong><small>SLiM-CC wartet, bis das externe Programm beendet wurde.</small></div>`;
+  }
+  private async monitorExternalProcess(processId: number | null): Promise<void> {
+    if (!processId) return;
+    while (await this.api.call<boolean>("process_is_running", { processId })) {
+      await new Promise((resolve) => window.setTimeout(resolve, 750));
+    }
+  }
+
+  private openDialog(html: string): void { const host = this.root.querySelector<HTMLElement>("#modal-host"); if (host) host.innerHTML = html; this.root.querySelector<HTMLElement>(".app-shell")?.classList.add("modal-open"); }
+  private closeDialog(): void { const host = this.root.querySelector<HTMLElement>("#modal-host"); if (host) host.innerHTML = ""; this.root.querySelector<HTMLElement>(".app-shell")?.classList.remove("modal-open"); }
   private fail(error: unknown): void { const message = error instanceof Error ? error.message : String(error); this.store.log("error", message); this.store.patch({ loading: false }); }
 }
 

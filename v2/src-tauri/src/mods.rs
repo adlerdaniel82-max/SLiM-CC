@@ -4,7 +4,7 @@ use crate::models::{
     FomodDependency, FomodDependencyGroup, FomodPackagePreview, ImportModFolderRequest,
     ImportedModReport, LootLaunchResult, LootSortPreview, ModDependencyStatus,
     ModDependencySummary, ModFile, ModRecord, ProfileModEntry, ProfilePluginEntry,
-    UpdateModDependenciesRequest, UpdateModRequest, UpdateProfileModsRequest,
+    ToolExecutionResult, UpdateModDependenciesRequest, UpdateModRequest, UpdateProfileModsRequest,
     UpdateProfilePluginsRequest,
 };
 use crate::paths;
@@ -17,6 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Component;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -558,10 +560,11 @@ pub fn preview_loot_sort(
             &preview_data_root,
         )?;
 
-        let launch_context = prepare_loot_launch_context_with_data_root(
+        let launch_context = prepare_loot_launch_context_with_data_root_for_runner(
             &paths::instance_root(workspace_root, instance_id).join("loot-preview-data"),
             game_identifier,
             &preview_game_root,
+            loot_uses_windows_paths(conn),
         )?;
         seed_loot_local_files(
             conn,
@@ -582,7 +585,8 @@ pub fn preview_loot_sort(
                 tool_request.executable_path.display()
             )));
         }
-        let (_process_id, execution) = tools::launch_tool(&tool_request)?;
+        let (_process_id, execution) =
+            launch_loot_tool(&tool_request, &launch_context.loot_data_path)?;
         if execution.exit_code != Some(0) {
             let mut message = format!("LOOT preview exited with status {:?}", execution.exit_code);
             if let Some(stderr) = execution
@@ -631,11 +635,12 @@ pub fn launch_loot(
         ))
     })?;
 
-    let launch_context = prepare_loot_launch_context(
+    let launch_context = prepare_loot_launch_context_for_runner(
         workspace_root,
         instance_id,
         game_identifier,
         &instance.install_path,
+        loot_uses_windows_paths(conn),
     )?;
     seed_loot_local_files(
         conn,
@@ -659,7 +664,7 @@ pub fn launch_loot(
     }
     let started_at = Utc::now().to_rfc3339();
     let preview = tools::build_command_preview(&tool_request)?;
-    let (process_id, execution) = tools::launch_tool(&tool_request)?;
+    let (process_id, execution) = launch_loot_tool(&tool_request, &launch_context.loot_data_path)?;
     let finished_at = Utc::now().to_rfc3339();
     tools::record_tool_run(
         conn,
@@ -738,6 +743,15 @@ fn build_loot_tool_launch_request(
         working_directory: Some(install_path.to_path_buf()),
         wine_prefix: instance_wine_prefix.map(PathBuf::from),
     })
+}
+
+fn loot_uses_windows_paths(conn: &Connection) -> bool {
+    tools::get_tool_profile(conn, "loot")
+        .map(|profile| {
+            profile.runner_type.eq_ignore_ascii_case("wine")
+                || profile.runner_type.eq_ignore_ascii_case("proton")
+        })
+        .unwrap_or(false)
 }
 
 pub fn import_mod_folder(
@@ -1350,24 +1364,48 @@ fn loot_game_identifier(game_type: &str) -> Option<&'static str> {
 
 #[derive(Debug, Clone)]
 struct LootLaunchContext {
+    loot_data_path: PathBuf,
     game_local_path: PathBuf,
     args: Vec<String>,
 }
 
+#[cfg(test)]
 fn prepare_loot_launch_context(
     workspace_root: &Path,
     instance_id: &str,
     game_identifier: &str,
     install_path: &Path,
 ) -> SlimResult<LootLaunchContext> {
-    let loot_data_path = paths::loot_data_path(workspace_root, instance_id);
-    prepare_loot_launch_context_with_data_root(&loot_data_path, game_identifier, install_path)
+    prepare_loot_launch_context_for_runner(
+        workspace_root,
+        instance_id,
+        game_identifier,
+        install_path,
+        false,
+    )
 }
 
-fn prepare_loot_launch_context_with_data_root(
+fn prepare_loot_launch_context_for_runner(
+    workspace_root: &Path,
+    instance_id: &str,
+    game_identifier: &str,
+    install_path: &Path,
+    windows_paths: bool,
+) -> SlimResult<LootLaunchContext> {
+    let loot_data_path = paths::loot_data_path(workspace_root, instance_id);
+    prepare_loot_launch_context_with_data_root_for_runner(
+        &loot_data_path,
+        game_identifier,
+        install_path,
+        windows_paths,
+    )
+}
+
+fn prepare_loot_launch_context_with_data_root_for_runner(
     loot_data_path: &Path,
     game_identifier: &str,
     install_path: &Path,
+    windows_paths: bool,
 ) -> SlimResult<LootLaunchContext> {
     let game_local_path = loot_data_path
         .join("local-appdata")
@@ -1378,21 +1416,71 @@ fn prepare_loot_launch_context_with_data_root(
     write_loot_settings(
         loot_data_path,
         game_identifier,
-        install_path,
-        &game_local_path,
+        &loot_runtime_path(install_path, windows_paths),
+        &loot_runtime_path(&game_local_path, windows_paths),
     )?;
+
+    let runtime_install_path = loot_runtime_path(install_path, windows_paths);
+    let runtime_data_path = loot_runtime_path(loot_data_path, windows_paths);
 
     let args = vec![
         format!("--game={game_identifier}"),
-        format!("--game-path={}", install_path.display()),
-        format!("--loot-data-path={}", loot_data_path.display()),
+        format!("--game-path={runtime_install_path}"),
+        format!("--loot-data-path={runtime_data_path}"),
         "--auto-sort".to_string(),
     ];
 
     Ok(LootLaunchContext {
+        loot_data_path: loot_data_path.to_path_buf(),
         game_local_path,
         args,
     })
+}
+
+fn launch_loot_tool(
+    request: &ToolLaunchRequest,
+    loot_data_path: &Path,
+) -> SlimResult<(u32, ToolExecutionResult)> {
+    const COMPLETION_GRACE: Duration = Duration::from_secs(3);
+    const MAX_RUNTIME: Duration = Duration::from_secs(600);
+    let debug_log_path = loot_data_path.join("LOOTDebugLog.txt");
+    let baseline_log = fs::read(&debug_log_path).unwrap_or_default();
+    let mut child = tools::spawn_tool(request)?;
+    let process_id = child.id();
+    let started = Instant::now();
+    let mut completed_at = None;
+
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok((process_id, tools::collect_tool_output(child)?));
+        }
+
+        let current_log = fs::read(&debug_log_path).unwrap_or_default();
+        let sort_completed = loot_log_reports_completion(&baseline_log, &current_log);
+        if sort_completed {
+            let completion = completed_at.get_or_insert_with(Instant::now);
+            if completion.elapsed() >= COMPLETION_GRACE {
+                child.kill()?;
+                let mut execution = tools::collect_tool_output(child)?;
+                execution.exit_code = Some(0);
+                return Ok((process_id, execution));
+            }
+        }
+
+        if started.elapsed() >= MAX_RUNTIME {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(SlimError::Process(
+                "LOOT hat die automatische Sortierung nicht innerhalb von 10 Minuten beendet."
+                    .into(),
+            ));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn loot_log_reports_completion(baseline: &[u8], current: &[u8]) -> bool {
+    current != baseline && String::from_utf8_lossy(current).contains("Sorting operation complete.")
 }
 
 fn seed_loot_local_files(
@@ -1506,21 +1594,53 @@ pub(crate) fn ensure_plugin_index_for_instance(
 fn write_loot_settings(
     loot_data_path: &Path,
     game_identifier: &str,
-    install_path: &Path,
-    game_local_path: &Path,
+    install_path: &str,
+    game_local_path: &str,
 ) -> SlimResult<()> {
     let settings_path = loot_data_path.join("settings.toml");
+    let (master, minimum_header_version, masterlist_repo) = loot_game_metadata(game_identifier);
     let content = format!(
-        "default_game = \"{}\"\n\n[[games]]\ngameId = \"{}\"\nfolder = \"{}\"\npath = \"{}\"\nlocal_path = \"{}\"\n",
+        "game = \"{}\"\nlastGame = \"{}\"\nenableDebugLogging = true\nupdateMasterlist = true\nuseNoSortingChangesDialog = false\nenableLootUpdateCheck = false\npreludeSource = \"https://raw.githubusercontent.com/loot/prelude/v0.29/prelude.yaml\"\n\n[[games]]\ngameId = \"{}\"\nname = \"{}\"\nfolder = \"{}\"\nmaster = \"{}\"\nminimumHeaderVersion = {}\nmasterlistSource = \"https://raw.githubusercontent.com/loot/{}/v0.29/masterlist.yaml\"\npath = \"{}\"\nlocal_path = \"{}\"\n",
         toml_escape(game_identifier),
         toml_escape(game_identifier),
         toml_escape(game_identifier),
-        toml_escape(&install_path.to_string_lossy()),
-        toml_escape(&game_local_path.to_string_lossy()),
+        toml_escape(game_identifier),
+        toml_escape(game_identifier),
+        toml_escape(master),
+        minimum_header_version,
+        toml_escape(masterlist_repo),
+        toml_escape(install_path),
+        toml_escape(game_local_path),
     );
 
     fs::write(settings_path, content)?;
     Ok(())
+}
+
+fn loot_game_metadata(game_identifier: &str) -> (&'static str, &'static str, &'static str) {
+    match game_identifier {
+        "Skyrim Special Edition" | "Skyrim VR" => ("Skyrim.esm", "1.7", "skyrimse"),
+        "Skyrim" => ("Skyrim.esm", "0.94", "skyrim"),
+        "Fallout4" | "Fallout4VR" => ("Fallout4.esm", "0.95", "fallout4"),
+        "FalloutNV" => ("FalloutNV.esm", "1.32", "falloutnv"),
+        "Fallout3" => ("Fallout3.esm", "0.94", "fallout3"),
+        "Oblivion" => ("Oblivion.esm", "0.8", "oblivion"),
+        "Morrowind" => ("Morrowind.esm", "1.2", "morrowind"),
+        "Enderal Special Edition" | "Enderal" => ("Skyrim.esm", "1.7", "enderal"),
+        _ => ("Skyrim.esm", "1.7", "skyrimse"),
+    }
+}
+
+fn loot_runtime_path(path: &Path, windows_paths: bool) -> String {
+    if !windows_paths {
+        return path.to_string_lossy().to_string();
+    }
+    let text = path.to_string_lossy();
+    if let Some(relative) = text.strip_prefix('/') {
+        format!("Z:\\{}", relative.replace('/', "\\"))
+    } else {
+        text.replace('/', "\\")
+    }
 }
 
 fn sanitise_loot_local_folder_name(game_identifier: &str) -> String {
@@ -2367,11 +2487,57 @@ mod tests {
         assert!(context.game_local_path.is_dir());
 
         let settings = fs::read_to_string(loot_data_path.join("settings.toml")).unwrap();
-        assert!(settings.contains("default_game = \"Skyrim Special Edition\""));
+        assert!(settings.contains("game = \"Skyrim Special Edition\""));
         assert!(settings.contains("gameId = \"Skyrim Special Edition\""));
+        assert!(settings.contains(
+            "preludeSource = \"https://raw.githubusercontent.com/loot/prelude/v0.29/prelude.yaml\""
+        ));
+        assert!(settings.contains("masterlistSource = \"https://raw.githubusercontent.com/loot/skyrimse/v0.29/masterlist.yaml\""));
         assert!(settings.contains("local_path = "));
 
         let _ = fs::remove_dir_all(workspace_root);
+    }
+
+    #[test]
+    fn loot_wine_context_uses_windows_paths_in_arguments_and_settings() {
+        let workspace_root = temp_workspace("loot-wine-paths");
+        let install_path = PathBuf::from("/games/Skyrim Anniversary Edition");
+        let context = prepare_loot_launch_context_for_runner(
+            &workspace_root,
+            "instance-a",
+            "Skyrim Special Edition",
+            &install_path,
+            true,
+        )
+        .unwrap();
+
+        assert!(context
+            .args
+            .contains(&"--game-path=Z:\\games\\Skyrim Anniversary Edition".to_string()));
+        assert!(context.args.iter().any(|argument| {
+            argument.starts_with("--loot-data-path=Z:\\") && !argument.contains('/')
+        }));
+        let settings = fs::read_to_string(
+            paths::loot_data_path(&workspace_root, "instance-a").join("settings.toml"),
+        )
+        .unwrap();
+        assert!(settings.contains("path = \"Z:\\\\games\\\\Skyrim Anniversary Edition\""));
+
+        let _ = fs::remove_dir_all(workspace_root);
+    }
+
+    #[test]
+    fn loot_completion_requires_a_new_completed_debug_log() {
+        let old = b"[info]: Sorting operation complete.";
+        assert!(!loot_log_reports_completion(old, old));
+        assert!(!loot_log_reports_completion(
+            old,
+            b"[info]: Beginning sorting operation."
+        ));
+        assert!(loot_log_reports_completion(
+            old,
+            b"[later]: Sorting operation complete."
+        ));
     }
 
     #[test]

@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     let downloads = 0;
+    let processPolls = 0;
     let instanceDeleted = false; let profileDeleted = false;
     (window as any).__commands = [];
     (window as any).__SLIMCC_BACKEND__ = { call: async (command: string, args?: Record<string, unknown>) => {
@@ -17,10 +18,19 @@ test.beforeEach(async ({ page }) => {
         list_nexus_requirement_status:[{id:"req",mod_id:"m",required_game_domain:"skyrimspecialedition",required_nexus_mod_id:32444,required_name:"Address Library for SKSE Plugins",requirement_type:"required",source:"nexus",notes:"Benötigte Laufzeitbibliothek",fetched_at:"2026-07-17",matched_mod_id:null,matched_mod_name:null,satisfied:false,status:"missing"}],
         list_profile_mods:[{mod_id:"m",mod_name:"SkyUI",version:"5.2",source_path:"/downloads/SkyUI.7z",installed_path:"/mods/m",enabled:true,priority:10,plugin_count:1,rule_type:null,rule_target_mod_id:null,rule_weight:0}],
         list_profile_plugins:[{plugin_id:"pl",mod_id:"m",mod_name:"SkyUI",filename:"SkyUI_SE.esp",plugin_type:"esp",normalized_rel_path:"skyui_se.esp",mod_enabled:true,enabled:true,priority:10,dependency_count:0,missing_dependency_count:0,dependency_status:"ok"}], list_mod_conflict_summary:[]
+        ,list_tool_profiles:[
+          {id:"tool-xedit",tool_key:"xedit",display_name:"SSEEdit / xEdit",executable_path:"/game/tools/xEdit/SSEEdit.exe",runner_type:"Wine",arguments:["-SSE"],working_directory:null,wine_prefix:null,log_path:null,enabled:true},
+          {id:"tool-nemesis",tool_key:"nemesis",display_name:"Nemesis",executable_path:"/game/tools/nemesis/Nemesis Unlimited Behavior Engine.exe",runner_type:"Wine",arguments:[],working_directory:null,wine_prefix:null,log_path:null,enabled:true},
+          {id:"tool-fnis",tool_key:"fnis",display_name:"FNIS",executable_path:null,runner_type:"Wine",arguments:[],working_directory:null,wine_prefix:null,log_path:null,enabled:false},
+          {id:"tool-pandora",tool_key:"pandora",display_name:"Pandora Behaviour Engine",executable_path:null,runner_type:"Wine",arguments:[],working_directory:null,wine_prefix:null,log_path:null,enabled:false},
+          {id:"tool-bodyslide",tool_key:"bodyslide",display_name:"BodySlide & Outfit Studio",executable_path:null,runner_type:"Wine",arguments:[],working_directory:null,wine_prefix:null,log_path:null,enabled:false}
+        ]
       };
       if(command === "list_mod_download_candidates") { downloads++; const length = (window as any).__extraDownload ? 41 : 40; return downloads > 1 ? Array.from({length}, (_, index) => ({name:index === 0 ? "New Mod" : `New Mod ${index}`,path:`/downloads/New Mod ${index}.7z`,entry_type:"archive",importable:true,installed:false,note:null})) : []; }
       if(command === "delete_instance") { instanceDeleted = true; return; }
       if(command === "delete_profile") { profileDeleted = true; return; }
+      if(command === "launch_tool_profile_vfs" || command === "launch_game") { await new Promise((resolve) => setTimeout(resolve, 500)); processPolls = 0; return {process_id:4242}; }
+      if(command === "process_is_running") return processPolls++ < 2;
       if(command === "preview_fomod_package") {
         await new Promise((resolve) => setTimeout(resolve, 500));
         if(String(args?.packageRoot).includes("fomod")) return {has_fomod:true,source_path:"/tmp/preview",module_name:"Test Installer",validation_notes:[],module_dependencies:null,required_files:[],conditional_file_installs:[],saved_selection:null,steps:[{name:"Komponenten",visible:null,groups:[{name:"Variante",selection_mode:"SelectExactlyOne",visible:null,options:[{id:"main",name:"Hauptdatei",description:"Testauswahl",image_path:null,default_selected:true,file_count:1,condition_flags:[],dependencies:null,dependency_context_available:true,files:[]}]}]}]};
@@ -141,4 +151,37 @@ test("about dialog includes banner and copyright", async ({ page }) => {
   await expect(page.getByRole("dialog", { name:"Über SLiM-CC v2" })).toBeVisible();
   await expect(page.getByRole("img", { name:"SLiM-CC" })).toBeVisible();
   await expect(page.getByText("(c)Schnüddel Media - https://schnueddels.de - Daniel Adler", { exact:true })).toBeVisible();
+});
+
+test("game tools can be configured and launched in the active VFS", async ({ page }) => {
+  await page.getByText("Werkzeuge", { exact:true }).click();
+  await page.getByRole("button", { name:"Anwendungen …" }).click();
+  await expect(page.getByRole("dialog", { name:"Werkzeug-Pfade" })).toBeVisible();
+  await expect(page.getByText("SSEEdit / xEdit", { exact:true })).toBeVisible();
+  await expect(page.getByText("FNIS", { exact:true })).toBeVisible();
+  await expect(page.getByText("Pandora Behaviour Engine", { exact:true })).toBeVisible();
+  await expect(page.getByText("BodySlide & Outfit Studio", { exact:true })).toBeVisible();
+  await page.locator("form[data-tool-key=nemesis]").getByRole("button", { name:"Im VFS starten" }).click();
+  await expect(page.locator("#external-process-overlay")).toContainText(/Nemesis (wird gestartet|ist aktiv)/);
+  const commands = await page.evaluate(() => (window as any).__commands as string[]);
+  expect(commands).toContain("launch_tool_profile_vfs");
+  await expect(page.locator("#external-process-overlay")).toBeHidden({ timeout:4000 });
+});
+
+test("game launch dims SLiM-CC until the game process exits", async ({ page }) => {
+  await page.getByRole("button", { name:/Starten/ }).click();
+  await expect(page.locator("#external-process-overlay")).toContainText(/Skyrim (wird gestartet|ist aktiv)/);
+  await expect(page.locator("#external-process-overlay")).toBeHidden({ timeout:4000 });
+  const commands = await page.evaluate(() => (window as any).__commands as string[]);
+  expect(commands).toContain("launch_game");
+  expect(commands).toContain("process_is_running");
+});
+
+test("settings link to the tool path configuration", async ({ page }) => {
+  await page.keyboard.press("Control+,");
+  await expect(page.getByRole("dialog", { name:"Einstellungen" })).toBeVisible();
+  await page.getByText("Werkzeug-Pfade", { exact:true }).click();
+  await page.getByRole("button", { name:"Werkzeug-Pfade konfigurieren …" }).click();
+  await expect(page.getByRole("dialog", { name:"Werkzeug-Pfade" })).toBeVisible();
+  await expect(page.getByText("BodySlide & Outfit Studio", { exact:true })).toBeVisible();
 });

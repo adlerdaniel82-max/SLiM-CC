@@ -82,6 +82,9 @@ pub fn list_tool_profiles(conn: &Connection) -> SlimResult<Vec<ToolProfile>> {
              WHEN 'loot' THEN 1
              WHEN 'xedit' THEN 2
              WHEN 'nemesis' THEN 3
+             WHEN 'fnis' THEN 4
+             WHEN 'pandora' THEN 5
+             WHEN 'bodyslide' THEN 6
              ELSE 99
          END, display_name ASC",
     )?;
@@ -356,7 +359,7 @@ fn get_tool_run(conn: &Connection, id: &str) -> SlimResult<ToolRunRecord> {
     )?)
 }
 
-fn build_tool_launch_request(
+pub fn build_tool_launch_request(
     profile: &ToolProfile,
     executable_path: PathBuf,
     settings: &crate::settings::AppSettings,
@@ -377,7 +380,10 @@ pub fn build_tool_launch_request_with_arguments(
 ) -> SlimResult<ToolLaunchRequest> {
     let arguments = tool_specific_arguments(&profile.tool_key, arguments);
     let working_directory = profile.working_directory.clone().or_else(|| {
-        if profile.tool_key.eq_ignore_ascii_case("nemesis") {
+        if matches!(
+            profile.tool_key.to_ascii_lowercase().as_str(),
+            "nemesis" | "fnis" | "pandora" | "bodyslide"
+        ) {
             executable_path.parent().map(PathBuf::from)
         } else {
             settings.install_path.clone()

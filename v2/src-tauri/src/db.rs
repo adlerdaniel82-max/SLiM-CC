@@ -15,6 +15,7 @@ const INSTANCE_GAME_STARTER_SCHEMA: &str =
     include_str!("../migrations/010_instance_game_starter.sql");
 const PROFILE_PLUGINS_SCHEMA: &str = include_str!("../migrations/011_profile_plugins.sql");
 const DEPENDENCY_STATE_SCHEMA: &str = include_str!("../migrations/012_dependency_state.sql");
+const VFS_TOOLS_SCHEMA: &str = include_str!("../migrations/013_add_vfs_tools.sql");
 
 pub fn open_database(path: &Path) -> SlimResult<Connection> {
     let conn = Connection::open(path)?;
@@ -31,5 +32,6 @@ pub fn open_database(path: &Path) -> SlimResult<Connection> {
     let _ = conn.execute_batch(INSTANCE_GAME_STARTER_SCHEMA);
     conn.execute_batch(PROFILE_PLUGINS_SCHEMA)?;
     let _ = conn.execute_batch(DEPENDENCY_STATE_SCHEMA);
+    conn.execute_batch(VFS_TOOLS_SCHEMA)?;
     Ok(conn)
 }
