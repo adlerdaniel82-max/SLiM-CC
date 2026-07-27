@@ -627,23 +627,41 @@ fn resolve_tool_path_into_vfs(
 }
 
 fn resolve_case_insensitive_path(root: &Path, relative: &Path) -> Option<PathBuf> {
-    let mut resolved = root.to_path_buf();
-    for component in relative.components() {
-        let std::path::Component::Normal(expected) = component else {
-            return None;
+    let components = relative
+        .components()
+        .map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_os_string()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    fn resolve_from(current: &Path, components: &[std::ffi::OsString]) -> Option<PathBuf> {
+        let Some((expected, remaining)) = components.split_first() else {
+            return Some(current.to_path_buf());
         };
-        let entry = std::fs::read_dir(&resolved)
+        let expected_text = expected.to_string_lossy();
+        let mut matches = std::fs::read_dir(current)
             .ok()?
             .filter_map(Result::ok)
-            .find(|entry| {
+            .filter(|entry| {
                 entry
                     .file_name()
                     .to_string_lossy()
-                    .eq_ignore_ascii_case(&expected.to_string_lossy())
-            })?;
-        resolved.push(entry.file_name());
+                    .eq_ignore_ascii_case(&expected_text)
+            })
+            .collect::<Vec<_>>();
+        // Overlay mounts can contain legacy paths that differ only by case. Prefer the
+        // exact spelling, but backtrack into every matching branch if it is incomplete.
+        matches.sort_by_key(|entry| entry.file_name() != *expected);
+        for entry in matches {
+            if let Some(path) = resolve_from(&current.join(entry.file_name()), remaining) {
+                return Some(path);
+            }
+        }
+        None
     }
-    Some(resolved)
+
+    resolve_from(root, &components)
 }
 
 #[tauri::command]
@@ -1013,6 +1031,26 @@ mod tests {
 
         assert_eq!(
             resolve_case_insensitive_path(&root, Path::new("data/tools/fnis/generatefnis.exe")),
+            Some(executable)
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn vfs_tool_paths_backtrack_across_case_collisions() {
+        let root = std::env::temp_dir().join(format!("slimcc-vfs-collision-{}", Uuid::new_v4()));
+        let legacy_directory = root.join("Data/tools/GenerateFNIS_for_Users");
+        let executable = root.join("Data/tools/generatefnis_for_users/generatefnisforusers.exe");
+        fs::create_dir_all(&legacy_directory).expect("create incomplete legacy path");
+        fs::create_dir_all(executable.parent().unwrap()).expect("create normalized tool path");
+        fs::write(&executable, b"exe").expect("write executable");
+
+        assert_eq!(
+            resolve_case_insensitive_path(
+                &root,
+                Path::new("data/tools/generatefnis_for_users/generatefnisforusers.exe")
+            ),
             Some(executable)
         );
 

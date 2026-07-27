@@ -497,7 +497,7 @@ export class SlimApp {
   }
   private async runLoot(): Promise<void> {
     const { activeInstanceId: instanceId, activeProfileId: profileId } = this.store.state; if (!instanceId || !profileId) return;
-    const activity = this.beginExternalActivity("LOOT sortiert die Plugins und bleibt zur Kontrolle geöffnet …");
+    const activity = this.beginExternalActivity("LOOT ist geöffnet – bitte sortieren, anwenden und anschließend schließen …");
     try {
       await this.api.call("launch_loot", { request: { instance_id: instanceId, profile_id: profileId } });
       this.store.log("success", "LOOT wurde beendet und die Sortierung übernommen.");

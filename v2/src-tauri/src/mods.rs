@@ -1426,7 +1426,6 @@ fn prepare_loot_launch_context_with_data_root_for_runner(
         format!("--game={game_identifier}"),
         format!("--game-path={runtime_install_path}"),
         format!("--loot-data-path={runtime_data_path}"),
-        "--auto-sort".to_string(),
     ];
 
     Ok(LootLaunchContext {
@@ -1597,21 +1596,85 @@ fn write_loot_settings(
 ) -> SlimResult<()> {
     let settings_path = loot_data_path.join("settings.toml");
     let (master, minimum_header_version, masterlist_repo) = loot_game_metadata(game_identifier);
-    let content = format!(
-        "game = \"{}\"\nlastGame = \"{}\"\nenableDebugLogging = true\nupdateMasterlist = true\nuseNoSortingChangesDialog = false\nenableLootUpdateCheck = false\npreludeSource = \"https://raw.githubusercontent.com/loot/prelude/v0.29/prelude.yaml\"\n\n[[games]]\ngameId = \"{}\"\nname = \"{}\"\nfolder = \"{}\"\nmaster = \"{}\"\nminimumHeaderVersion = {}\nmasterlistSource = \"https://raw.githubusercontent.com/loot/{}/v0.29/masterlist.yaml\"\npath = \"{}\"\nlocal_path = \"{}\"\n",
-        toml_escape(game_identifier),
-        toml_escape(game_identifier),
-        toml_escape(game_identifier),
-        toml_escape(game_identifier),
-        toml_escape(game_identifier),
-        toml_escape(master),
-        minimum_header_version,
-        toml_escape(masterlist_repo),
-        toml_escape(install_path),
-        toml_escape(game_local_path),
+    let mut settings = if settings_path.is_file() {
+        toml::from_str::<toml::Value>(&fs::read_to_string(&settings_path)?)
+            .map_err(|error| SlimError::InvalidPath(format!("invalid LOOT settings: {error}")))?
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+    let root = settings
+        .as_table_mut()
+        .ok_or_else(|| SlimError::InvalidPath("LOOT settings root is not a table".into()))?;
+    root.insert("game".into(), toml::Value::String(game_identifier.into()));
+    root.insert(
+        "lastGame".into(),
+        toml::Value::String(game_identifier.into()),
+    );
+    root.entry("enableDebugLogging")
+        .or_insert(toml::Value::Boolean(true));
+    root.entry("updateMasterlist")
+        .or_insert(toml::Value::Boolean(true));
+    root.entry("useNoSortingChangesDialog")
+        .or_insert(toml::Value::Boolean(false));
+    root.entry("enableLootUpdateCheck")
+        .or_insert(toml::Value::Boolean(false));
+    root.entry("preludeSource").or_insert(toml::Value::String(
+        "https://raw.githubusercontent.com/loot/prelude/v0.29/prelude.yaml".into(),
+    ));
+
+    let games = root
+        .entry("games")
+        .or_insert_with(|| toml::Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| SlimError::InvalidPath("LOOT games setting is not an array".into()))?;
+    let mut matching_indices = games
+        .iter()
+        .enumerate()
+        .filter_map(|(index, game)| {
+            (game.get("gameId").and_then(toml::Value::as_str) == Some(game_identifier))
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let game_index = matching_indices.first().copied().unwrap_or_else(|| {
+        games.push(toml::Value::Table(toml::map::Map::new()));
+        games.len() - 1
+    });
+    if matching_indices.len() > 1 {
+        for duplicate in matching_indices.drain(1..).rev() {
+            games.remove(duplicate);
+        }
+    }
+    let game = games[game_index]
+        .as_table_mut()
+        .ok_or_else(|| SlimError::InvalidPath("LOOT game setting is not a table".into()))?;
+    game.insert("gameId".into(), toml::Value::String(game_identifier.into()));
+    game.insert("name".into(), toml::Value::String(game_identifier.into()));
+    game.insert("folder".into(), toml::Value::String(game_identifier.into()));
+    game.insert("master".into(), toml::Value::String(master.into()));
+    game.insert(
+        "minimumHeaderVersion".into(),
+        minimum_header_version
+            .parse::<f64>()
+            .map(toml::Value::Float)
+            .map_err(|error| SlimError::InvalidPath(error.to_string()))?,
+    );
+    game.insert(
+        "masterlistSource".into(),
+        toml::Value::String(format!(
+            "https://raw.githubusercontent.com/loot/{masterlist_repo}/v0.29/masterlist.yaml"
+        )),
+    );
+    game.insert("path".into(), toml::Value::String(install_path.into()));
+    game.insert(
+        "local_path".into(),
+        toml::Value::String(game_local_path.into()),
     );
 
-    fs::write(settings_path, content)?;
+    fs::write(
+        settings_path,
+        toml::to_string_pretty(&settings)
+            .map_err(|error| SlimError::InvalidPath(error.to_string()))?,
+    )?;
     Ok(())
 }
 
@@ -1647,20 +1710,6 @@ fn sanitise_loot_local_folder_name(game_identifier: &str) -> String {
         .map(|character| match character {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             _ => character,
-        })
-        .collect()
-}
-
-fn toml_escape(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(|character| match character {
-            '\\' => "\\\\".chars().collect::<Vec<_>>(),
-            '"' => "\\\"".chars().collect(),
-            '\n' => "\\n".chars().collect(),
-            '\r' => "\\r".chars().collect(),
-            '\t' => "\\t".chars().collect(),
-            _ => vec![character],
         })
         .collect()
 }
@@ -2473,6 +2522,7 @@ mod tests {
             .args
             .iter()
             .all(|arg| !arg.starts_with("--game-appdata-path")));
+        assert!(!context.args.contains(&"--auto-sort".to_string()));
         assert!(context
             .args
             .contains(&"--game=Skyrim Special Edition".to_string()));
@@ -2501,6 +2551,52 @@ mod tests {
     }
 
     #[test]
+    fn loot_settings_preserve_first_run_and_ui_state() {
+        let workspace_root = temp_workspace("loot-persistent-settings");
+        let loot_data_path = paths::loot_data_path(&workspace_root, "instance-a");
+        fs::create_dir_all(&loot_data_path).unwrap();
+        fs::write(
+            loot_data_path.join("settings.toml"),
+            r#"lastVersion = "0.29.1"
+language = "de"
+
+[window]
+maximised = true
+
+[[games]]
+gameId = "Skyrim Special Edition"
+name = "Old managed entry"
+path = "C:\\old"
+
+[[games]]
+gameId = "Skyrim Special Edition"
+name = "Duplicate auto-detected entry"
+path = "C:\\duplicate"
+"#,
+        )
+        .unwrap();
+
+        write_loot_settings(
+            &loot_data_path,
+            "Skyrim Special Edition",
+            r"Z:\vfs\game",
+            r"Z:\loot\local-appdata",
+        )
+        .unwrap();
+
+        let settings = fs::read_to_string(loot_data_path.join("settings.toml")).unwrap();
+        let parsed = toml::from_str::<toml::Value>(&settings).unwrap();
+        assert_eq!(parsed["lastVersion"].as_str(), Some("0.29.1"));
+        assert_eq!(parsed["language"].as_str(), Some("de"));
+        assert_eq!(parsed["window"]["maximised"].as_bool(), Some(true));
+        let games = parsed["games"].as_array().unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0]["path"].as_str(), Some(r"Z:\vfs\game"));
+
+        let _ = fs::remove_dir_all(workspace_root);
+    }
+
+    #[test]
     fn loot_wine_context_uses_windows_paths_in_arguments_and_settings() {
         let workspace_root = temp_workspace("loot-wine-paths");
         let install_path = PathBuf::from("/state/instances/instance-a/profiles/profile-a/vfs/game");
@@ -2524,9 +2620,11 @@ mod tests {
             paths::loot_data_path(&workspace_root, "instance-a").join("settings.toml"),
         )
         .unwrap();
-        assert!(settings.contains(
-            "path = \"Z:\\\\state\\\\instances\\\\instance-a\\\\profiles\\\\profile-a\\\\vfs\\\\game\""
-        ));
+        let settings = toml::from_str::<toml::Value>(&settings).unwrap();
+        assert_eq!(
+            settings["games"][0]["path"].as_str(),
+            Some(r"Z:\state\instances\instance-a\profiles\profile-a\vfs\game")
+        );
 
         let _ = fs::remove_dir_all(workspace_root);
     }
