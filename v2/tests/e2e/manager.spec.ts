@@ -5,14 +5,19 @@ test.beforeEach(async ({ page }) => {
     let downloads = 0;
     let processPolls = 0;
     let instanceDeleted = false; let profileDeleted = false;
+    let instanceStarter = "/game/skse64_loader.exe";
+    const mods = [
+      {id:"m",instance_id:"i",name:"SkyUI",version:"5.2",size_bytes:1024,source_path:"/downloads/SkyUI.7z",installed_path:"/mods/m",enabled_default:true,tags:[],notes:null,rule_type:null,rule_target_mod_id:null,rule_weight:0},
+      ...Array.from({length:35}, (_, index) => ({id:`m-${index}`,instance_id:"i",name:`Test Mod ${String(index).padStart(2, "0")}`,version:"1.0",size_bytes:2048,source_path:`/downloads/mod-${index}.7z`,installed_path:`/mods/m-${index}`,enabled_default:true,tags:[],notes:null,rule_type:null,rule_target_mod_id:null,rule_weight:0}))
+    ];
     (window as any).__commands = [];
     (window as any).__SLIMCC_BACKEND__ = { call: async (command: string, args?: Record<string, unknown>) => {
       (window as any).__commands.push(command);
       const data: Record<string, unknown> = {
-        list_instances:instanceDeleted ? [] : [{id:"i",name:"Skyrim Special Edition",game_type:"skyrimse",install_path:"/game",data_path:"/game/Data",game_starter_path:"/game/skse64_loader.exe",runner_type:"wine",wine_prefix:null}],
+        list_instances:instanceDeleted ? [] : [{id:"i",name:"Skyrim Special Edition",game_type:"skyrimse",install_path:"/game",data_path:"/game/Data",game_starter_path:instanceStarter,runner_type:"wine",wine_prefix:null}],
         get_app_settings:{install_path:"/game",data_path:"/game/Data",wine_prefix:null,loot_executable_path:null,mod_download_path:"/downloads",language:"de",nexus_api_key_configured:true,nexus_api_key_masked:"abcd********wxyz"},
         list_profiles:profileDeleted ? [] : [{id:"p",instance_id:"i",name:"Default"}],
-        list_mods:[{id:"m",instance_id:"i",name:"SkyUI",version:"5.2",size_bytes:1024,source_path:"/downloads/SkyUI.7z",installed_path:"/mods/m",enabled_default:true,tags:[],notes:null,rule_type:null,rule_target_mod_id:null,rule_weight:0}],
+        list_mods:mods,
         list_instance_dependency_summary:[{mod_id:"m",dependency_count:2,missing_count:2,status:"missing"}],
         list_mod_dependencies:[{id:"dep",mod_id:"m",dependency_type:"plugin",target_mod_id:null,target_value:"MissingMaster.esp",notes:"Plugin-Master",satisfied:false,status:"missing"}],
         list_nexus_requirement_status:[{id:"req",mod_id:"m",required_game_domain:"skyrimspecialedition",required_nexus_mod_id:32444,required_name:"Address Library for SKSE Plugins",requirement_type:"required",source:"nexus",notes:"Benötigte Laufzeitbibliothek",fetched_at:"2026-07-17",matched_mod_id:null,matched_mod_name:null,satisfied:false,status:"missing"}],
@@ -29,6 +34,11 @@ test.beforeEach(async ({ page }) => {
       };
       if(command === "list_mod_download_candidates") { downloads++; const length = (window as any).__extraDownload ? 41 : 40; return downloads > 1 ? Array.from({length}, (_, index) => ({name:index === 0 ? "New Mod" : `New Mod ${index}`,path:`/downloads/New Mod ${index}.7z`,entry_type:"archive",importable:true,installed:false,note:null})) : []; }
       if(command === "delete_instance") { instanceDeleted = true; return; }
+      if(command === "update_instance") {
+        const request = args?.request as {game_starter_path?: string};
+        instanceStarter = request.game_starter_path ?? instanceStarter;
+        return {id:"i",name:"Skyrim Special Edition",game_type:"skyrimse",install_path:"/game",data_path:"/game/Data",game_starter_path:instanceStarter,runner_type:"wine",wine_prefix:null};
+      }
       if(command === "delete_profile") { profileDeleted = true; return; }
       if(command === "launch_tool_profile_vfs" || command === "launch_game") { await new Promise((resolve) => setTimeout(resolve, 500)); processPolls = 0; return {process_id:4242}; }
       if(command === "process_is_running") return processPolls++ < 2;
@@ -46,7 +56,7 @@ test.beforeEach(async ({ page }) => {
 
 test("compact manager exposes primary workflows", async ({ page }) => {
   await expect(page.getByText("SkyUI", { exact:true }).first()).toBeVisible();
-  await expect(page.getByRole("button", { name:/Starten/ })).toBeVisible();
+  await expect(page.getByRole("button", { name:/starten/i })).toBeVisible();
   await page.getByRole("button", { name:"Downloads" }).first().click();
   await page.getByRole("button", { name:/Aktualisieren/ }).last().click();
   await expect(page.getByText("New Mod", { exact:true })).toBeVisible();
@@ -58,6 +68,17 @@ test("compact manager exposes primary workflows", async ({ page }) => {
   await page.evaluate(() => { (window as any).__extraDownload = true; });
   await page.getByRole("button", { name:/Aktualisieren/ }).last().click();
   expect(await page.locator(".downloads").evaluate((element) => element.scrollTop)).toBe(180);
+});
+
+test("selecting a mod preserves the mod list scroll position", async ({ page }) => {
+  const list = page.locator('[data-scroll-key="mods"]');
+  await list.evaluate((element) => { element.scrollTop = 260; });
+  const before = await list.evaluate((element) => element.scrollTop);
+  await page.locator('[data-mod-id="m-20"]').evaluate((element) => {
+    element.dispatchEvent(new MouseEvent("click", { bubbles:true }));
+  });
+  await expect(page.locator('[data-mod-id="m-20"]')).toHaveClass(/selected/);
+  expect(await list.evaluate((element) => element.scrollTop)).toBe(before);
 });
 
 test("large imports show responsive progress", async ({ page }) => {
@@ -146,6 +167,19 @@ test("instances and profiles expose confirmed delete actions", async ({ page }) 
   expect(commands).toContain("delete_instance"); expect(commands).toContain("delete_profile");
 });
 
+test("instances can be edited including the SKSE starter", async ({ page }) => {
+  await page.getByText("Datei", { exact:true }).click();
+  await page.getByRole("button", { name:"Instanzen verwalten …" }).click();
+  await page.getByRole("button", { name:"Bearbeiten …" }).click();
+  const starter = page.getByLabel("Spielstarter / SKSE");
+  await expect(starter).toHaveValue("/game/skse64_loader.exe");
+  await starter.fill("/game/SkyrimSELauncher.exe");
+  await page.getByRole("button", { name:"Änderungen speichern" }).click();
+  const commands = await page.evaluate(() => (window as any).__commands as string[]);
+  expect(commands).toContain("update_instance");
+  await expect(page.getByRole("button", { name:"Starten" })).toHaveAttribute("title", "SkyrimSELauncher.exe");
+});
+
 test("about dialog includes banner and copyright", async ({ page }) => {
   await page.getByText("Hilfe", { exact:true }).click();
   await page.getByRole("button", { name:"Über SLiM-CC" }).click();
@@ -174,7 +208,7 @@ test("game tools can be configured and launched in the active VFS", async ({ pag
 });
 
 test("game launch dims SLiM-CC until the game process exits", async ({ page }) => {
-  await page.getByRole("button", { name:/Starten/ }).click();
+  await page.getByRole("button", { name:/starten/i }).click();
   await expect(page.locator("#external-process-overlay")).toContainText(/Skyrim (wird gestartet|ist aktiv)/);
   await expect(page.locator("#external-process-overlay")).toBeHidden({ timeout:4000 });
   const commands = await page.evaluate(() => (window as any).__commands as string[]);

@@ -1,6 +1,6 @@
 [package]
 name = "slim-cc-v2"
-version = "2.1.2"
+version = "2.1.3"
 description = "Skyrim Linux Mod ControlCenter"
 authors = ["Daniel Adler"]
 edition = "2021"

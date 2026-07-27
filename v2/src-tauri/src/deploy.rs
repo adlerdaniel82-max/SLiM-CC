@@ -87,12 +87,12 @@ pub fn build_plan(
 
         let target_path = if target != DeployTarget::RealData {
             winner
-                .original_rel_path
+                .normalized_rel_path
                 .strip_prefix(crate::scanner::GAME_ROOT_PREFIX)
                 .map(|relative| {
                     paths::vfs_layer_path(workspace_root, instance_id, profile_id).join(relative)
                 })
-                .unwrap_or_else(|| target_root.join(&winner.original_rel_path))
+                .unwrap_or_else(|| target_root.join(&winner.normalized_rel_path))
         } else {
             target_root.join(&winner.original_rel_path)
         };
@@ -348,7 +348,7 @@ mod tests {
         conn.execute(
             "INSERT INTO mod_files (id, mod_id, original_rel_path, normalized_rel_path, abs_source_path, created_at)
              VALUES ('file-plugin', 'mod-a', 'Patch.esp', 'patch.esp', ?1, '2026-01-01T00:00:00Z'),
-                    ('file-mesh', 'mod-a', 'meshes/item.nif', 'meshes/item.nif', ?2, '2026-01-01T00:00:00Z')",
+                    ('file-mesh', 'mod-a', 'Meshes/Actors/Item.NIF', 'meshes/actors/item.nif', ?2, '2026-01-01T00:00:00Z')",
             params![
                 source_root.join("Patch.esp").to_string_lossy().to_string(),
                 source_root.join("meshes").join("item.nif").to_string_lossy().to_string()
@@ -379,7 +379,13 @@ mod tests {
         .expect("build deploy plan");
 
         assert_eq!(plan.operations.len(), 1);
-        assert_eq!(plan.operations[0].normalized_rel_path, "meshes/item.nif");
+        assert_eq!(
+            plan.operations[0].normalized_rel_path,
+            "meshes/actors/item.nif"
+        );
+        assert!(plan.operations[0]
+            .target
+            .ends_with("vfs/layer/Data/meshes/actors/item.nif"));
 
         let _ = fs::remove_dir_all(&workspace_root);
     }

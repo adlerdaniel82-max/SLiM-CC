@@ -1,4 +1,4 @@
-import { escapeHtml, formatBytes } from "../core/dom";
+import { escapeHtml, formatBytes, pathName } from "../core/dom";
 import type { AppState } from "../core/store";
 
 const icon = (name: string) => `<span class="icon" aria-hidden="true">${name}</span>`;
@@ -58,7 +58,7 @@ function profileBar(state: AppState, profileName?: string): string {
 function modTable(state: AppState): string {
   const statusById = new Map(state.dependencies.map((item) => [item.mod_id, item]));
   const profileById = new Map(state.profileMods.map((item) => [item.mod_id, item]));
-  return `<div class="table-wrap"><table class="data-table mods-table"><thead><tr><th class="check"></th><th>Mod Name</th><th>Status</th><th>Version</th><th>Größe</th><th>Priorität</th></tr></thead><tbody>
+  return `<div class="table-wrap" data-scroll-key="mods"><table class="data-table mods-table"><thead><tr><th class="check"></th><th>Mod Name</th><th>Status</th><th>Version</th><th>Größe</th><th>Priorität</th></tr></thead><tbody>
     ${state.mods.map((mod) => { const entry = profileById.get(mod.id); const dep = statusById.get(mod.id); return `<tr data-mod-id="${mod.id}" class="${mod.id === state.activeModId ? "selected" : ""}" data-search="${escapeHtml(mod.name.toLowerCase())}">
       <td><input type="checkbox" data-action="toggle-mod" data-id="${mod.id}" ${entry?.enabled ?? mod.enabled_default ? "checked" : ""} aria-label="${escapeHtml(mod.name)} aktiv"></td>
       <td class="primary">${escapeHtml(mod.name)}</td><td><span class="dot ${dep?.missing_count ? "bad" : "good"}" title="${dep?.missing_count ?? 0} fehlende Abhängigkeiten"></span></td>
@@ -68,7 +68,9 @@ function modTable(state: AppState): string {
 
 function runner(state: AppState): string {
   const instance = state.instances.find((item) => item.id === state.activeInstanceId);
-  return `<div class="runner"><select data-field="instance" aria-label="Instanz">${state.instances.map((item) => `<option value="${item.id}" ${item.id === state.activeInstanceId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select><button class="start" data-action="launch">▶ <span>${instance?.game_starter_path ? "Starten" : "Start konfigurieren"}</span></button></div>`;
+  const starter = instance?.game_starter_path ? pathName(instance.game_starter_path) : "";
+  const startLabel = !starter ? "Start konfigurieren" : starter.toLowerCase().includes("skse") ? "SKSE starten" : "Starten";
+  return `<div class="runner"><select data-field="instance" aria-label="Instanz">${state.instances.map((item) => `<option value="${item.id}" ${item.id === state.activeInstanceId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select><button class="start" data-action="launch" title="${escapeHtml(starter || "Kein Starter konfiguriert")}">▶ <span>${startLabel}</span></button></div>`;
 }
 
 function tabBar(state: AppState): string {
@@ -83,12 +85,12 @@ function detailView(state: AppState): string {
 }
 
 function plugins(state: AppState): string {
-  return `<div class="panel-head"><strong>Plugin-Reihenfolge</strong><span class="grow"></span><button data-action="run-loot">Sortieren</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th></th><th>Name</th><th>Mod</th><th>Priorität</th></tr></thead><tbody>${state.plugins.map((plugin) => `<tr><td><input type="checkbox" data-action="toggle-plugin" data-id="${plugin.plugin_id}" ${plugin.enabled ? "checked" : ""}></td><td class="primary">${escapeHtml(plugin.filename)}</td><td>${escapeHtml(plugin.mod_name)}</td><td>${plugin.priority}</td></tr>`).join("") || `<tr><td colspan="4" class="empty">Keine Plugins im aktiven Profil.</td></tr>`}</tbody></table></div>`;
+  return `<div class="panel-head"><strong>Plugin-Reihenfolge</strong><span class="grow"></span><button data-action="run-loot">Sortieren</button></div><div class="table-wrap" data-scroll-key="plugins"><table class="data-table"><thead><tr><th></th><th>Name</th><th>Mod</th><th>Priorität</th></tr></thead><tbody>${state.plugins.map((plugin) => `<tr><td><input type="checkbox" data-action="toggle-plugin" data-id="${plugin.plugin_id}" ${plugin.enabled ? "checked" : ""}></td><td class="primary">${escapeHtml(plugin.filename)}</td><td>${escapeHtml(plugin.mod_name)}</td><td>${plugin.priority}</td></tr>`).join("") || `<tr><td colspan="4" class="empty">Keine Plugins im aktiven Profil.</td></tr>`}</tbody></table></div>`;
 }
 
 function downloads(state: AppState): string {
   return `<div class="panel-head"><strong>Downloadordner</strong><span class="path">${escapeHtml(state.settings?.mod_download_path ?? "Nicht konfiguriert")}</span><span class="grow"></span><button data-action="analyze-collection">Collection …</button><button class="primary-button" data-action="refresh-downloads">↻ Aktualisieren</button></div>
-    <div class="downloads">${state.downloads.map((item) => `<article class="download-card ${item.installed ? "installed" : ""}"><div><strong>${escapeHtml(item.name)}</strong>${item.note ? `<small>${escapeHtml(item.note)}</small>` : ""}</div><span class="grow"></span>${item.installed ? `<span class="state-label">Installiert</span>` : `<button class="compact-button" data-action="import-download" data-path="${escapeHtml(item.path)}">Installieren</button>`}</article>`).join("") || `<div class="empty-state">Keine importierbaren Dateien gefunden.<button data-action="refresh-downloads">Jetzt aktualisieren</button></div>`}</div>`;
+    <div class="downloads" data-scroll-key="downloads">${state.downloads.map((item) => `<article class="download-card ${item.installed ? "installed" : ""}"><div><strong>${escapeHtml(item.name)}</strong>${item.note ? `<small>${escapeHtml(item.note)}</small>` : ""}</div><span class="grow"></span>${item.installed ? `<span class="state-label">Installiert</span>` : `<button class="compact-button" data-action="import-download" data-path="${escapeHtml(item.path)}">Installieren</button>`}</article>`).join("") || `<div class="empty-state">Keine importierbaren Dateien gefunden.<button data-action="refresh-downloads">Jetzt aktualisieren</button></div>`}</div>`;
 }
 
 function conflicts(state: AppState): string {

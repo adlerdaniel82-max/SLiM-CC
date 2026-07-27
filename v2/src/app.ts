@@ -5,7 +5,7 @@ import { escapeHtml, pathName } from "./core/dom";
 import { Store } from "./core/store";
 import { normalizeSelection, selectionIsValid } from "./features/fomod/selection";
 import type { AppSettings, FomodPackagePreview, FomodSelectionEntry, GameInstance, ImportedModReport, ModConflictSummary, ModDependencyStatus, ModDependencySummary, ModDownloadCandidate, ModRecord, NexusRequirementStatus, Profile, ProfileModEntry, ProfilePluginEntry, ToolExecutableCandidate, ToolProfile, View } from "./types";
-import { aboutDialog, collectionDialog, collectionResultDialog, deleteInstanceDialog, deleteModDialog, deleteProfileDialog, dependencyDetailsDialog, fomodDialog, importDialog, instancesDialog, profilesDialog, settingsDialog, toolsDialog } from "./ui/dialogs";
+import { aboutDialog, collectionDialog, collectionResultDialog, deleteInstanceDialog, deleteModDialog, deleteProfileDialog, dependencyDetailsDialog, editInstanceDialog, fomodDialog, importDialog, instancesDialog, profilesDialog, settingsDialog, toolsDialog } from "./ui/dialogs";
 import { renderShell } from "./ui/shell";
 
 export class SlimApp {
@@ -38,7 +38,10 @@ export class SlimApp {
     if (!currentShell) this.root.innerHTML = renderShell(this.store.state);
     else {
       const openMenus = [...currentShell.querySelectorAll<HTMLDetailsElement>(".menu")].map((menu) => menu.open);
-      const downloadScrollTop = currentShell.querySelector<HTMLElement>(".downloads")?.scrollTop;
+      const scrollPositions = new Map(
+        [...currentShell.querySelectorAll<HTMLElement>("[data-scroll-key]")]
+          .map((element) => [element.dataset.scrollKey ?? "", element.scrollTop] as const)
+      );
       const template = document.createElement("template"); template.innerHTML = renderShell(this.store.state);
       const freshShell = template.content.firstElementChild as HTMLElement;
       const currentChildren = [...currentShell.children]; const freshChildren = [...freshShell.children];
@@ -47,7 +50,10 @@ export class SlimApp {
         currentChildren[index]?.replaceWith(fresh);
       });
       currentShell.querySelectorAll<HTMLDetailsElement>(".menu").forEach((menu, index) => { menu.open = openMenus[index] ?? false; });
-      const downloads = currentShell.querySelector<HTMLElement>(".downloads"); if (downloads && downloadScrollTop !== undefined) downloads.scrollTop = downloadScrollTop;
+      currentShell.querySelectorAll<HTMLElement>("[data-scroll-key]").forEach((element) => {
+        const scrollTop = scrollPositions.get(element.dataset.scrollKey ?? "");
+        if (scrollTop !== undefined) element.scrollTop = scrollTop;
+      });
     }
     const activity = this.root.querySelector<HTMLElement>("[data-role=activity]");
     if (activity) activity.hidden = !this.logVisible;
@@ -97,6 +103,7 @@ export class SlimApp {
         case "delete-mod": { const mod = this.store.state.mods.find((item) => item.id === target.dataset.modId); if (mod) this.openDialog(deleteModDialog(mod.id, mod.name)); break; }
         case "confirm-delete-mod": await this.deleteMod(target.dataset.modId ?? ""); break;
         case "mod-details": await this.showModDetails(target.dataset.modId ?? ""); break;
+        case "edit-instance": { const instance = this.store.state.instances.find((item) => item.id === target.dataset.instanceId); if (instance) this.openDialog(editInstanceDialog(instance)); break; }
         case "request-delete-instance": { const instance = this.store.state.instances.find((item) => item.id === target.dataset.instanceId); if (instance) this.openDialog(deleteInstanceDialog(instance.id, instance.name)); break; }
         case "confirm-delete-instance": await this.deleteInstance(target.dataset.instanceId ?? ""); break;
         case "request-delete-profile": { const profile = this.store.state.profiles.find((item) => item.id === target.dataset.profileId); if (profile) this.openDialog(deleteProfileDialog(profile.id, profile.name)); break; }
@@ -161,6 +168,7 @@ export class SlimApp {
       if (form.dataset.form === "settings") await this.saveSettings(form);
       if (form.dataset.form === "collection") await this.analyzeCollection(form);
       if (form.dataset.form === "create-instance") await this.createInstance(form);
+      if (form.dataset.form === "update-instance") await this.updateInstance(form);
       if (form.dataset.form === "create-profile") await this.createProfile(form);
       if (form.dataset.form === "tool-profile") await this.saveToolProfile(form);
     } catch (error) { this.fail(error); }
@@ -345,6 +353,19 @@ export class SlimApp {
     await this.refreshAll(); this.store.log("success", `Instanz ${instance.name} mit Standardprofil angelegt.`);
   }
 
+  private async updateInstance(form: HTMLFormElement): Promise<void> {
+    const data = new FormData(form); const text = (name: string) => String(data.get(name) ?? "").trim();
+    const id = text("id"); const installPath = text("install_path"); const dataPath = text("data_path");
+    if (!id || !installPath || !dataPath) throw new Error("Instanz, Spiel- und Data-Verzeichnis werden benötigt.");
+    const instance = await this.api.call<GameInstance>("update_instance", { request: {
+      id, name: text("name"), install_path: installPath, data_path: dataPath,
+      game_starter_path: text("game_starter_path") || null, runner_type: text("runner_type") || "wine",
+      wine_prefix: text("wine_prefix") || null
+    } });
+    this.closeDialog(); this.store.patch({ activeInstanceId: instance.id });
+    await this.refreshAll(); this.store.log("success", `Instanz ${instance.name} wurde aktualisiert.`);
+  }
+
   private async createProfile(form: HTMLFormElement): Promise<void> {
     const instanceId = this.store.state.activeInstanceId; const name = String(new FormData(form).get("name") ?? "").trim();
     if (!instanceId || !name) throw new Error("Instanz und Profilname werden benötigt.");
@@ -476,10 +497,10 @@ export class SlimApp {
   }
   private async runLoot(): Promise<void> {
     const { activeInstanceId: instanceId, activeProfileId: profileId } = this.store.state; if (!instanceId || !profileId) return;
-    const activity = this.beginExternalActivity("LOOT sortiert die Plugins …");
+    const activity = this.beginExternalActivity("LOOT sortiert die Plugins und bleibt zur Kontrolle geöffnet …");
     try {
       await this.api.call("launch_loot", { request: { instance_id: instanceId, profile_id: profileId } });
-      this.store.log("success", "LOOT wurde ausgeführt.");
+      this.store.log("success", "LOOT wurde beendet und die Sortierung übernommen.");
     } finally { this.endExternalActivity(activity); }
   }
   private async diagnose(): Promise<void> { const { activeInstanceId: instanceId, activeProfileId: profileId } = this.store.state; if (!instanceId || !profileId) return; await this.api.call("build_diagnosis_report", { instanceId, profileId }); this.store.log("success", "Diagnose abgeschlossen."); }

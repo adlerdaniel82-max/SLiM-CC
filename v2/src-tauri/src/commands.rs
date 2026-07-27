@@ -594,13 +594,13 @@ fn resolve_tool_path_into_vfs(
                 path.display()
             )));
         }
-        path.to_path_buf()
+        PathBuf::from(crate::scanner::normalize_rel_path(&path.to_string_lossy()))
     } else if let Ok(relative) = path.strip_prefix(game_root) {
         relative.to_path_buf()
     } else {
-        let original_rel_path: String = conn
+        let normalized_rel_path: String = conn
             .query_row(
-                "SELECT mf.original_rel_path
+                "SELECT mf.normalized_rel_path
                  FROM mod_files mf
                  JOIN mods m ON m.id = mf.mod_id
                  LEFT JOIN profile_mods pm ON pm.mod_id = m.id AND pm.profile_id = ?2
@@ -617,12 +617,33 @@ fn resolve_tool_path_into_vfs(
                     path.display()
                 ))
             })?;
-        original_rel_path
+        normalized_rel_path
             .strip_prefix(crate::scanner::GAME_ROOT_PREFIX)
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("Data").join(original_rel_path))
+            .unwrap_or_else(|| PathBuf::from("data").join(normalized_rel_path))
     };
-    Ok(mount_path.join(relative))
+    Ok(resolve_case_insensitive_path(mount_path, &relative)
+        .unwrap_or_else(|| mount_path.join(relative)))
+}
+
+fn resolve_case_insensitive_path(root: &Path, relative: &Path) -> Option<PathBuf> {
+    let mut resolved = root.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(expected) = component else {
+            return None;
+        };
+        let entry = std::fs::read_dir(&resolved)
+            .ok()?
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&expected.to_string_lossy())
+            })?;
+        resolved.push(entry.file_name());
+    }
+    Some(resolved)
 }
 
 #[tauri::command]
@@ -974,4 +995,27 @@ fn resolve_loot_executable_path(conn: &rusqlite::Connection) -> SlimResult<Optio
 
 fn is_non_empty_path(path: &Path) -> bool {
     !path.as_os_str().is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_case_insensitive_path;
+    use std::fs;
+    use std::path::Path;
+    use uuid::Uuid;
+
+    #[test]
+    fn vfs_tool_paths_resolve_case_insensitively() {
+        let root = std::env::temp_dir().join(format!("slimcc-vfs-case-{}", Uuid::new_v4()));
+        let executable = root.join("Data/Tools/FNIS/GenerateFNIS.exe");
+        fs::create_dir_all(executable.parent().unwrap()).expect("create tool path");
+        fs::write(&executable, b"exe").expect("write executable");
+
+        assert_eq!(
+            resolve_case_insensitive_path(&root, Path::new("data/tools/fnis/generatefnis.exe")),
+            Some(executable)
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
 }

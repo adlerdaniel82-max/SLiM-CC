@@ -17,8 +17,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Component;
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::{Duration, Instant};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -570,6 +568,7 @@ pub fn preview_loot_sort(
             conn,
             instance_id,
             profile_id,
+            &preview_game_root,
             &launch_context.game_local_path,
         )?;
         let tool_request = build_loot_tool_launch_request(
@@ -585,8 +584,7 @@ pub fn preview_loot_sort(
                 tool_request.executable_path.display()
             )));
         }
-        let (_process_id, execution) =
-            launch_loot_tool(&tool_request, &launch_context.loot_data_path)?;
+        let (_process_id, execution) = launch_loot_tool(&tool_request)?;
         if execution.exit_code != Some(0) {
             let mut message = format!("LOOT preview exited with status {:?}", execution.exit_code);
             if let Some(stderr) = execution
@@ -647,6 +645,7 @@ pub fn launch_loot(
         conn,
         instance_id,
         profile_id,
+        game_path,
         &launch_context.game_local_path,
     )?;
 
@@ -665,7 +664,7 @@ pub fn launch_loot(
     }
     let started_at = Utc::now().to_rfc3339();
     let preview = tools::build_command_preview(&tool_request)?;
-    let (process_id, execution) = launch_loot_tool(&tool_request, &launch_context.loot_data_path)?;
+    let (process_id, execution) = launch_loot_tool(&tool_request)?;
     let finished_at = Utc::now().to_rfc3339();
     tools::record_tool_run(
         conn,
@@ -1365,7 +1364,6 @@ fn loot_game_identifier(game_type: &str) -> Option<&'static str> {
 
 #[derive(Debug, Clone)]
 struct LootLaunchContext {
-    loot_data_path: PathBuf,
     game_local_path: PathBuf,
     args: Vec<String>,
 }
@@ -1432,70 +1430,69 @@ fn prepare_loot_launch_context_with_data_root_for_runner(
     ];
 
     Ok(LootLaunchContext {
-        loot_data_path: loot_data_path.to_path_buf(),
         game_local_path,
         args,
     })
 }
 
-fn launch_loot_tool(
-    request: &ToolLaunchRequest,
-    loot_data_path: &Path,
-) -> SlimResult<(u32, ToolExecutionResult)> {
-    const COMPLETION_GRACE: Duration = Duration::from_secs(3);
-    const MAX_RUNTIME: Duration = Duration::from_secs(600);
-    let debug_log_path = loot_data_path.join("LOOTDebugLog.txt");
-    let baseline_log = fs::read(&debug_log_path).unwrap_or_default();
-    let mut child = tools::spawn_tool(request)?;
+fn launch_loot_tool(request: &ToolLaunchRequest) -> SlimResult<(u32, ToolExecutionResult)> {
+    let child = tools::spawn_tool(request)?;
     let process_id = child.id();
-    let started = Instant::now();
-    let mut completed_at = None;
-
-    loop {
-        if child.try_wait()?.is_some() {
-            return Ok((process_id, tools::collect_tool_output(child)?));
-        }
-
-        let current_log = fs::read(&debug_log_path).unwrap_or_default();
-        let sort_completed = loot_log_reports_completion(&baseline_log, &current_log);
-        if sort_completed {
-            let completion = completed_at.get_or_insert_with(Instant::now);
-            if completion.elapsed() >= COMPLETION_GRACE {
-                child.kill()?;
-                let mut execution = tools::collect_tool_output(child)?;
-                execution.exit_code = Some(0);
-                return Ok((process_id, execution));
-            }
-        }
-
-        if started.elapsed() >= MAX_RUNTIME {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(SlimError::Process(
-                "LOOT hat die automatische Sortierung nicht innerhalb von 10 Minuten beendet."
-                    .into(),
-            ));
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn loot_log_reports_completion(baseline: &[u8], current: &[u8]) -> bool {
-    current != baseline && String::from_utf8_lossy(current).contains("Sorting operation complete.")
+    Ok((process_id, tools::collect_tool_output(child)?))
 }
 
 fn seed_loot_local_files(
     conn: &Connection,
     instance_id: &str,
     profile_id: &str,
+    game_path: &Path,
     game_local_path: &Path,
 ) -> SlimResult<()> {
     fs::create_dir_all(game_local_path)?;
-    let plugins = profile_plugin_filenames(conn, instance_id, profile_id, true)?;
+    let mut plugins = profile_plugin_filenames(conn, instance_id, profile_id, true)?;
     let loadorder = profile_plugin_filenames(conn, instance_id, profile_id, false)?;
+    let mut known_plugins: BTreeSet<String> = plugins
+        .iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
+    for filename in visible_game_plugins(game_path)? {
+        if known_plugins.insert(filename.to_ascii_lowercase()) {
+            plugins.push(filename);
+        }
+    }
     fs::write(game_local_path.join("plugins.txt"), plugins.join("\n"))?;
     fs::write(game_local_path.join("loadorder.txt"), loadorder.join("\n"))?;
     Ok(())
+}
+
+fn visible_game_plugins(game_path: &Path) -> SlimResult<Vec<String>> {
+    let data_path = fs::read_dir(game_path)?
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry.file_type().is_ok_and(|kind| kind.is_dir())
+                && entry
+                    .file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case("data")
+        })
+        .map(|entry| entry.path())
+        .unwrap_or_else(|| game_path.join("Data"));
+    if !data_path.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut plugins = Vec::new();
+    for entry in fs::read_dir(data_path)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file()
+            || !scanner::is_plugin_path(&entry.file_name().to_string_lossy())
+        {
+            continue;
+        }
+        plugins.push(entry.file_name().to_string_lossy().to_string());
+    }
+    plugins.sort_by_key(|name| name.to_ascii_lowercase());
+    Ok(plugins)
 }
 
 fn profile_plugin_filenames(
@@ -2396,6 +2393,10 @@ mod tests {
     fn seed_loot_local_files_writes_current_profile_plugins_for_no_change_loot_runs() {
         let workspace_root = temp_workspace("loot-seed-files");
         let local_path = workspace_root.join("loot-local");
+        let game_path = workspace_root.join("game");
+        fs::create_dir_all(game_path.join("Data")).expect("create game Data");
+        fs::write(game_path.join("Data/Skyrim.esm"), b"master").expect("write base master");
+        fs::write(game_path.join("Data/ccTest.esl"), b"creation").expect("write creation");
         let conn = Connection::open_in_memory().expect("open in-memory database");
         conn.execute_batch(include_str!("../migrations/001_initial.sql"))
             .expect("create schema");
@@ -2439,12 +2440,12 @@ mod tests {
         )
         .expect("disable plugin");
 
-        seed_loot_local_files(&conn, "instance-a", "profile-a", &local_path)
+        seed_loot_local_files(&conn, "instance-a", "profile-a", &game_path, &local_path)
             .expect("seed loot local files");
 
         assert_eq!(
             fs::read_to_string(local_path.join("plugins.txt")).expect("read plugins"),
-            "Main.esm"
+            "Main.esm\nccTest.esl\nSkyrim.esm"
         );
         assert_eq!(
             fs::read_to_string(local_path.join("loadorder.txt")).expect("read loadorder"),
@@ -2528,20 +2529,6 @@ mod tests {
         ));
 
         let _ = fs::remove_dir_all(workspace_root);
-    }
-
-    #[test]
-    fn loot_completion_requires_a_new_completed_debug_log() {
-        let old = b"[info]: Sorting operation complete.";
-        assert!(!loot_log_reports_completion(old, old));
-        assert!(!loot_log_reports_completion(
-            old,
-            b"[info]: Beginning sorting operation."
-        ));
-        assert!(loot_log_reports_completion(
-            old,
-            b"[later]: Sorting operation complete."
-        ));
     }
 
     #[test]
