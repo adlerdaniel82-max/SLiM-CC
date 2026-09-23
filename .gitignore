@@ -1,6 +1,22 @@
 # Local-only README: contains development credentials and must never be committed.
 /README.md
 
+# Local secrets and signing material must never enter the repository.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials.json
+secrets.json
+
 # Reproducible local dependencies and Rust debug build artifacts.
 /node_modules/
 /src-tauri/target/
